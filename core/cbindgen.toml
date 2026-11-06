@@ -1,0 +1,7 @@
+language = "C"
+include_guard = "HALF_BROWSER_CORE_H"
+cpp_compat = true
+include_version = true
+
+[export]
+include = ["TrustDecision", "AccentPalette", "Encrypted", "HistoryEntry"]

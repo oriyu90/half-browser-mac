@@ -1,0 +1,17 @@
+# Build outputs
+cefapp/build/
+core/target/
+app/.build/
+*.dmg
+*.app/
+
+# CEF SDK (fetched by scripts/fetch-cef.sh)
+cef/cef_binary_*/
+cef/*.tar.bz2
+
+# Local / secrets
+local.properties
+*.pem
+*.jks
+shots/
+.DS_Store
