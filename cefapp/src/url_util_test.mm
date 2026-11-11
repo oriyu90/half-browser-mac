@@ -2,6 +2,7 @@
 #include "url_util.h"
 #include "json_util.h"
 #include "bookmarks.h"
+#include "form_login.h"
 #include "settings_store.h"
 #include "localization.h"
 #include "half_browser_core.h"
@@ -213,6 +214,22 @@ int RunSelfTests() {
         expectTrue(stat(path.c_str(), &st) == 0, "atomic write produced the file");
         expectTrue(stat(tmp.c_str(), &st) != 0, "temp file was renamed away");
         remove(path.c_str());
+    }
+
+    // ---- credentials never travel over the console ------------------------
+    {
+        std::string script = FormLoginService::detectionScript();
+        expectTrue(script.find("console.log") == std::string::npos,
+                   "form-login script does not log to the console");
+        expectTrue(script.find("halfbrowser-formlogin://") != std::string::npos,
+                   "form-login uses the private channel");
+    }
+
+    // ---- autofill never submits and only fills empty fields ---------------
+    {
+        // No saved credential for this origin -> empty script.
+        std::string none = FormLoginService::autofillScript("https://no-such-origin.invalid");
+        expectTrue(none.empty(), "autofill is empty without saved credentials");
     }
 
     if (failures == 0) {

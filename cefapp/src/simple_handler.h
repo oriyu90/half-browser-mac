@@ -57,6 +57,13 @@ public:
     // CefRequestHandler - SSL
     bool OnCertificateError(CefRefPtr<CefBrowser> browser, cef_errorcode_t cert_error, const CefString& request_url, CefRefPtr<CefSSLInfo> ssl_info, CefRefPtr<CefCallback> callback) override;
 
+    // CefRequestHandler - navigation interception (form-login transport)
+    bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
+                        CefRefPtr<CefFrame> frame,
+                        CefRefPtr<CefRequest> request,
+                        bool user_gesture,
+                        bool is_redirect) override;
+
     // CefRequestHandler - Auth
     bool GetAuthCredentials(CefRefPtr<CefBrowser> browser, const CefString& origin_url, bool is_proxy, const CefString& host, int port, const CefString& realm, const CefString& scheme, CefRefPtr<CefAuthCallback> callback) override;
 

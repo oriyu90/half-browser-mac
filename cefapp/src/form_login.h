@@ -10,5 +10,8 @@ public:
     static bool loadCredentials(const std::string& originUrl, std::string& username, std::string& password);
     // Returns the JavaScript to inject for form detection.
     static std::string detectionScript();
+    // Returns JavaScript that fills saved credentials into empty fields without
+    // submitting, or "" when nothing is saved for this origin.
+    static std::string autofillScript(const std::string& originUrl);
 };
 #endif

@@ -11,6 +11,8 @@
 #include "form_login.h"
 #include "site_permissions.h"
 #include "localization.h"
+#include "settings_store.h"
+#include "url_util.h"
 #include "json_util.h"
 #include <mutex>
 #include <string>
@@ -77,6 +79,14 @@ void SimpleHandler::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
         // Inject form login detection script
         if (url.find("https://") == 0) {
             frame->ExecuteJavaScript(FormLoginService::detectionScript(), frame->GetURL(), 0);
+            // Fill saved sign-ins into empty fields (never submits).
+            if (SettingsStore::instance().load().formAutofillEnabled) {
+                std::string origin = UrlUtil::origin(url);
+                std::string fill = FormLoginService::autofillScript(origin);
+                if (!fill.empty()) {
+                    frame->ExecuteJavaScript(fill, frame->GetURL(), 0);
+                }
+            }
         }
     }
 }
@@ -264,6 +274,53 @@ bool SimpleHandler::OnCertificateError(CefRefPtr<CefBrowser> browser, cef_errorc
     return true;
 }
 
+bool SimpleHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
+                                   CefRefPtr<CefFrame> frame,
+                                   CefRefPtr<CefRequest> request,
+                                   bool user_gesture,
+                                   bool is_redirect) {
+    CEF_REQUIRE_UI_THREAD();
+    if (!request) return false;
+    std::string url = request->GetURL().ToString();
+    const std::string scheme = "halfbrowser-formlogin://capture#";
+    if (url.compare(0, scheme.size(), scheme) != 0) return false;
+
+    // The page posted a credential payload. Cancel the navigation (nothing
+    // leaves the process) and handle it exactly like the old console path.
+    std::string payload = url.substr(scheme.size());
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (true) {
+        size_t pos = payload.find('|', start);
+        if (pos == std::string::npos) {
+            parts.push_back(payload.substr(start));
+            break;
+        }
+        parts.push_back(payload.substr(start, pos - start));
+        start = pos + 1;
+    }
+    if (parts.size() < 3) return true;
+
+    std::string username = JsonUtil::urlDecode(parts[0]);
+    std::string password = JsonUtil::urlDecode(parts[1]);
+    std::string origin = JsonUtil::urlDecode(parts[2]);
+
+    if (username.empty() || password.empty()) return true;
+    if (origin.find("https://") != 0) return true;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSAlert* alert = [[NSAlert alloc] init];
+        [alert setMessageText:[NSString stringWithUTF8String:L("formlogin.title").c_str()]];
+        [alert setInformativeText:[NSString stringWithFormat:[NSString stringWithUTF8String:L("formlogin.body").c_str()], origin.c_str(), username.c_str()]];
+        [alert addButtonWithTitle:[NSString stringWithUTF8String:L("formlogin.save").c_str()]];
+        [alert addButtonWithTitle:[NSString stringWithUTF8String:L("formlogin.not_now").c_str()]];
+        if ([alert runModal] == NSAlertFirstButtonReturn) {
+            FormLoginService::saveCredentials(origin, username, password);
+        }
+    });
+    return true;
+}
+
 bool SimpleHandler::GetAuthCredentials(CefRefPtr<CefBrowser> browser, const CefString& origin_url, bool is_proxy, const CefString& host, int port, const CefString& realm, const CefString& scheme, CefRefPtr<CefAuthCallback> callback) {
     std::string h = host.ToString();
     std::string r = realm.ToString();
@@ -409,56 +466,25 @@ bool SimpleHandler::OnRequestMediaAccessPermission(CefRefPtr<CefBrowser> browser
 }
 
 // ============================================================
-// Form login: receive detection via console message
+// Console messages
 // ============================================================
 bool SimpleHandler::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
                                      cef_log_severity_t level,
                                      const CefString& message,
                                      const CefString& source,
                                      int line) {
-    std::string msg = message.ToString();
-    const std::string prefix = "__HB_FORM_LOGIN__|";
-    if (msg.compare(0, prefix.size(), prefix) != 0) return false;
-
-    // Format: __HB_FORM_LOGIN__|username|password|origin (each URL-encoded)
-    std::string rest = msg.substr(prefix.size());
-    std::vector<std::string> parts;
-    size_t start = 0;
-    while (true) {
-        size_t pos = rest.find('|', start);
-        if (pos == std::string::npos) {
-            parts.push_back(rest.substr(start));
-            break;
-        }
-        parts.push_back(rest.substr(start, pos - start));
-        start = pos + 1;
-    }
-    if (parts.size() < 3) return true;
-
-    // URL-decode (JsonUtil validates the hex digits, so a malformed "%zz"
-    // sequence is passed through instead of throwing).
-    std::string username = JsonUtil::urlDecode(parts[0]);
-    std::string password = JsonUtil::urlDecode(parts[1]);
-    std::string origin = JsonUtil::urlDecode(parts[2]);
-
-    if (username.empty() || password.empty()) return true;
-    if (origin.find("https://") != 0) return true;
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSAlert* alert = [[NSAlert alloc] init];
-        [alert setMessageText:[NSString stringWithUTF8String:L("formlogin.title").c_str()]];
-        [alert setInformativeText:[NSString stringWithFormat:[NSString stringWithUTF8String:L("formlogin.body").c_str()], origin.c_str(), username.c_str()]];
-        [alert addButtonWithTitle:[NSString stringWithUTF8String:L("formlogin.save").c_str()]];
-        [alert addButtonWithTitle:[NSString stringWithUTF8String:L("formlogin.not_now").c_str()]];
-        if ([alert runModal] == NSAlertFirstButtonReturn) {
-            FormLoginService::saveCredentials(origin, username, password);
-        }
-    });
-    return true;
+    // Credentials are NEVER carried over the console: a page can wrap
+    // console.log and read every argument, and Chromium may log the call.
+    // Form logins use the private halfbrowser-formlogin:// channel handled in
+    // OnBeforeBrowse instead.
+    (void)browser;
+    (void)level;
+    (void)message;
+    (void)source;
+    (void)line;
+    return false;
 }
 
-// ============================================================
-// Site permissions: generic permission prompts (notifications, geolocation, ...)
 // ============================================================
 bool SimpleHandler::OnShowPermissionPrompt(CefRefPtr<CefBrowser> browser,
                                            uint64_t prompt_id,
