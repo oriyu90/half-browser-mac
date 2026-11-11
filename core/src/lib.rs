@@ -14,6 +14,7 @@ pub mod grid_policy;
 pub mod auth_key;
 pub mod credential_key;
 pub mod models;
+pub mod js_guard;
 pub mod vpn_config;
 pub mod vpn_health;
 pub mod vpn_tuning;
