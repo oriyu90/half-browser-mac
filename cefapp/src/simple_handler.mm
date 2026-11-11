@@ -73,6 +73,22 @@ void SimpleHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
     }
 }
 
+void SimpleHandler::OnLoadStart(CefRefPtr<CefBrowser> browser,
+                                CefRefPtr<CefFrame> frame,
+                                TransitionType transition_type) {
+    (void)browser;
+    (void)transition_type;
+    if (!frame || !frame->IsMain()) return;
+    // The JS guard must run before any page script, so it is injected at load
+    // start rather than at load end. Without this the shim was never installed
+    // and only the native dialog budget was protecting the UI.
+    if (!SettingsStore::instance().load().jsGuardEnabled) return;
+    char* script = hb_js_guard_script();
+    if (!script) return;
+    frame->ExecuteJavaScript(script, frame->GetURL(), 0);
+    hb_free_string(script);
+}
+
 void SimpleHandler::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int status_code) {
     if (frame->IsMain()) {
         std::string url = frame->GetURL().ToString();
@@ -308,6 +324,27 @@ bool SimpleHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
 
     if (username.empty() || password.empty()) return true;
     if (origin.find("https://") != 0) return true;
+
+    // The page reports its own origin in the payload, so it must be checked
+    // against the frame that actually sent it: otherwise any page could claim
+    // to be https://bank.example and have the credentials stored under that
+    // key. The real origin wins whenever it can be determined.
+    std::string realOrigin;
+    if (frame && frame->IsValid()) {
+        realOrigin = UrlUtil::origin(frame->GetURL().ToString());
+    }
+    if (!realOrigin.empty()) {
+        if (realOrigin != origin) {
+            // Mismatch: drop it rather than store credentials under a lie.
+            return true;
+        }
+    } else if (origin.size() > 2048) {
+        // No frame URL to compare against; still bound the stored key.
+        return true;
+    }
+
+    // Bound the payload so a hostile page cannot push megabytes at the UI.
+    if (username.size() > 512 || password.size() > 2048) return true;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         NSAlert* alert = [[NSAlert alloc] init];

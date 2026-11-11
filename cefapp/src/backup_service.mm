@@ -67,7 +67,14 @@ void applySettingsJson(const std::string& obj) {
     if (JsonUtil::hasKey(obj, "accentHue")) s.accentHue = (float)JsonUtil::getDouble(obj, "accentHue", s.accentHue);
     if (JsonUtil::hasKey(obj, "accentSaturation")) s.accentSaturation = (float)JsonUtil::getDouble(obj, "accentSaturation", s.accentSaturation);
     if (JsonUtil::hasKey(obj, "accentTone")) s.accentTone = (float)JsonUtil::getDouble(obj, "accentTone", s.accentTone);
-    if (JsonUtil::hasKey(obj, "formAutofillEnabled")) s.formAutofillEnabled = JsonUtil::getBool(obj, "formAutofillEnabled", s.formAutofillEnabled);
+    // "formLoginEnabled" is the pre-1.9 name for the same switch; a backup
+    // written by an older build only carries that one, so honour it when the
+    // new key is absent.
+    if (JsonUtil::hasKey(obj, "formAutofillEnabled")) {
+        s.formAutofillEnabled = JsonUtil::getBool(obj, "formAutofillEnabled", s.formAutofillEnabled);
+    } else if (JsonUtil::hasKey(obj, "formLoginEnabled")) {
+        s.formAutofillEnabled = JsonUtil::getBool(obj, "formLoginEnabled", s.formAutofillEnabled);
+    }
     if (JsonUtil::hasKey(obj, "fetchBookmarkIcons")) s.fetchBookmarkIcons = JsonUtil::getBool(obj, "fetchBookmarkIcons", s.fetchBookmarkIcons);
     SettingsStore::instance().save(s);
 }

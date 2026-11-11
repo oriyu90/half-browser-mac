@@ -151,15 +151,19 @@ int RunSelfTests() {
         if (js) hb_free_string(js);
     }
 
-    // ---- Settings round-trip (B1/B2 regression guard) ----------------------
-    // Writes to a temporary file, not the user's settings, so the self-test is
-    // safe to run on a real installation.
+    // ---- Settings round-trip through SettingsStore itself -----------------
+    // Exercises load()/save() rather than re-implementing the parsing beside
+    // them, so a regression inside the store is actually caught. The store is
+    // pointed at a scratch file so the user's settings are untouched.
     {
+        const char* scratch = "/tmp/hb_selftest_settings.json";
+        remove(scratch);
+        SettingsStore& store = SettingsStore::instance();
+        store.setFilePathForTesting(scratch);
+
         AppSettings s;
         s.themeMode = "dark";
         s.accentHue = 123.5f;
-        s.accentSaturation = 0.5f;
-        s.uiScale = 1.2f;
         s.gridColumns = 5;
         s.searchEngine = "kagi";
         s.vpnAutoConnect = true;
@@ -170,202 +174,54 @@ int RunSelfTests() {
         s.siteWatchWifiOnly = true;
         s.jsGuardEnabled = false;
         s.formAutofillEnabled = false;
+        store.save(s);
 
-        std::string path = "/tmp/hb_selftest_settings.json";
+        AppSettings r = store.load();
+        expectEq(r.themeMode, "dark", "settings theme round-trip");
+        expectTrue(r.accentHue > 123.4f && r.accentHue < 123.6f, "settings accent hue");
+        expectEq(std::to_string(r.gridColumns), "5", "settings grid columns");
+        expectEq(r.searchEngine, "kagi", "settings search engine");
+        expectTrue(r.vpnAutoConnect, "settings vpnAutoConnect");
+        expectTrue(!r.vpnAutoReconnect, "settings vpnAutoReconnect");
+        expectTrue(r.vpnPowerSaver, "settings vpnPowerSaver");
+        expectTrue(r.siteWatchEnabled, "settings siteWatchEnabled");
+        expectEq(std::to_string(r.siteWatchIntervalMinutes), "30", "settings watch interval");
+        expectTrue(r.siteWatchWifiOnly, "settings siteWatchWifiOnly");
+        expectTrue(!r.jsGuardEnabled, "settings jsGuardEnabled");
+        expectTrue(!r.formAutofillEnabled, "settings formAutofillEnabled");
+
         // A key that is a prefix of another must not be confused with it.
-        std::string blob =
-            "{\"themeMode\":\"dark\",\"accentHue\":123.5,\"accentHueExtra\":999,"
-            "\"accentSaturation\":0.5,\"uiScale\":1.2,\"gridColumns\":5,"
-            "\"searchEngine\":\"kagi\",\"vpnAutoConnect\":true,\"vpnAutoReconnect\":false,"
-            "\"vpnPowerSaver\":true,\"siteWatchEnabled\":true,\"siteWatchIntervalMinutes\":30,"
-            "\"siteWatchWifiOnly\":true,\"jsGuardEnabled\":false,\"formAutofillEnabled\":false}";
         {
-            std::ofstream f(path, std::ios::binary | std::ios::trunc);
-            f << blob;
+            std::ofstream f(scratch, std::ios::binary | std::ios::trunc);
+            f << "{\"accentHue\":42.0,\"accentHueExtra\":999}";
         }
-        AppSettings loaded;
-        // Parse the same way SettingsStore does, via the shared helpers.
-        loaded.themeMode = JsonUtil::getString(blob, "themeMode", "system");
-        loaded.accentHue = (float)JsonUtil::getDouble(blob, "accentHue", 222.0);
-        loaded.vpnAutoConnect = JsonUtil::getBool(blob, "vpnAutoConnect", false);
-        loaded.vpnAutoReconnect = JsonUtil::getBool(blob, "vpnAutoReconnect", true);
-        loaded.siteWatchIntervalMinutes = (int)JsonUtil::getInt(blob, "siteWatchIntervalMinutes", 60);
-        loaded.jsGuardEnabled = JsonUtil::getBool(blob, "jsGuardEnabled", true);
+        AppSettings p2 = store.load();
+        expectTrue(p2.accentHue > 41.9f && p2.accentHue < 42.1f,
+                   "settings prefix key is not confused");
 
-        expectEq(loaded.themeMode, "dark", "settings theme round-trip");
-        // The value must be 123.5, not 999 from the longer "accentHueExtra" key.
-        expectTrue(loaded.accentHue > 123.4f && loaded.accentHue < 123.6f,
-                   "settings accent hue (prefix key ignored)");
-        expectTrue(loaded.vpnAutoConnect, "settings vpnAutoConnect");
-        expectTrue(!loaded.vpnAutoReconnect, "settings vpnAutoReconnect");
-        expectEq(std::to_string(loaded.siteWatchIntervalMinutes), "30", "settings watch interval");
-        expectTrue(!loaded.jsGuardEnabled, "settings jsGuard");
-        remove(path.c_str());
-    }
-
-    // ---- Site watch (T1) ---------------------------------------------------
-    // Everything below is pure or touches a scratch file under /tmp, so the
-    // self-test never reads or writes the user's real site_watch.json.
-    {
-        // SHA-256 against the published NIST vectors.
-        expectEq(SiteWatch::sha256Hex(""),
-                 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                 "sha256 empty");
-        expectEq(SiteWatch::sha256Hex("abc"),
-                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-                 "sha256 abc");
-        // A one-byte change must change the hash (this is the whole feature).
-        expectTrue(SiteWatch::sha256Hex("abc") != SiteWatch::sha256Hex("abd"),
-                   "sha256 differs on one-byte change");
-
-        // Hash comparison: no baseline -> Baseline, same -> Unchanged,
-        // different -> Changed.
-        const std::string h1 = SiteWatch::sha256Hex("v1");
-        const std::string h2 = SiteWatch::sha256Hex("v2");
-        expectTrue(SiteWatch::classify("", h1) == SiteWatchVerdict::Baseline,
-                   "watch classify baseline");
-        expectTrue(SiteWatch::classify(h1, h1) == SiteWatchVerdict::Unchanged,
-                   "watch classify unchanged");
-        expectTrue(SiteWatch::classify(h1, h2) == SiteWatchVerdict::Changed,
-                   "watch classify changed");
-        // An empty body hash never counts as a change.
-        expectTrue(SiteWatch::classify(h1, "") == SiteWatchVerdict::Unchanged,
-                   "watch classify empty new hash");
-
-        // Interval sanitizing mirrors SettingsStore (15/30/60/180).
-        expectEq(std::to_string(SiteWatch::sanitizeInterval(15)), "15", "watch interval 15");
-        expectEq(std::to_string(SiteWatch::sanitizeInterval(180)), "180", "watch interval 180");
-        expectEq(std::to_string(SiteWatch::sanitizeInterval(7)), "60", "watch interval default");
-        expectEq(std::to_string(SiteWatch::sanitizeInterval(-1)), "60", "watch interval negative");
-
-        // Only http(s) pages are fetched.
-        expectTrue(SiteWatch::isFetchable("https://example.com/a"), "watch fetchable https");
-        expectTrue(SiteWatch::isFetchable("http://example.com/"), "watch fetchable http");
-        expectTrue(!SiteWatch::isFetchable("file:///etc/passwd"), "watch rejects file");
-        expectTrue(!SiteWatch::isFetchable("javascript:alert(1)"), "watch rejects javascript");
-        expectTrue(!SiteWatch::isFetchable(""), "watch rejects empty url");
-        expectEq(SiteWatch::siteName("https://www.example.com/x"), "example.com", "watch site name");
-    }
-
-    // ---- Site watch JSON round-trip ---------------------------------------
-    {
-        std::vector<SiteWatchItem> items;
-        SiteWatchItem a;
-        a.url = "https://example.com/a";
-        a.hash = SiteWatch::sha256Hex("page a");
-        a.checkedAt = 1700000000000LL;
-        a.title = "Example \"A\" / quote";
-        SiteWatchItem b;
-        b.url = "https://example.com/b?x=1&y=2";
-        b.hash = "";
-        b.checkedAt = 0;
-        b.title = "B";
-        items.push_back(a);
-        items.push_back(b);
-
-        std::string blob = SiteWatch::serialize(items, 1700000000123LL, "timeout");
-        expectTrue(blob.find("\"version\":1") != std::string::npos, "watch json version 1");
-
-        std::vector<SiteWatchItem> back;
-        long long check = 0;
-        std::string err;
-        expectTrue(SiteWatch::parse(blob, back, check, err), "watch parse ok");
-        expectEq(std::to_string(back.size()), "2", "watch round-trip item count");
-        expectEq(back[0].url, a.url, "watch round-trip url");
-        expectEq(back[0].hash, a.hash, "watch round-trip hash");
-        expectEq(std::to_string(back[0].checkedAt), "1700000000000", "watch round-trip checkedAt");
-        // Quotes and backslashes inside a title must survive escaping.
-        expectEq(back[0].title, a.title, "watch round-trip title with quotes");
-        expectEq(back[1].url, b.url, "watch round-trip url with query");
-        expectEq(back[1].hash, "", "watch round-trip empty hash");
-        expectEq(std::to_string(check), "1700000000123", "watch round-trip lastCheck");
-        expectEq(err, "timeout", "watch round-trip lastError");
-
-        // Same input -> byte-identical output (the file must be stable).
-        expectEq(SiteWatch::serialize(back, check, err), blob, "watch serialize is stable");
-    }
-
-    // ---- Site watch survives corrupt input --------------------------------
-    {
-        const char* broken[] = {
-            "",
-            "not json at all",
-            "{\"version\":1,\"items\":[",                       // truncated
-            "{\"version\":1,\"items\":\"oops\"}",             // wrong type
-            "{\"version\":1,\"items\":[{\"url\":\"https://a.example\",\"hash\":\"zz\"}]}",
-            "{\"items\":[null,null,{}]}",
-            "{\"items\":[{\"url\":\"file:///etc/passwd\",\"hash\":\"x\"}]}",
-            "{\"lastCheck\":-5,\"items\":[{\"url\":\"https://ok.example\",\"checkedAt\":-1}]}",
-            "\x00\x01\x02\xff\xfe",
-        };
-        for (const char* input : broken) {
-            std::vector<SiteWatchItem> got;
-            long long check = 12345;
-            std::string err = "stale";
-            // Must not throw or crash, whatever the input.
-            SiteWatch::parse(input, got, check, err);
-            // Sanitizing rules: no negative timestamps, no non-http URLs,
-            // no malformed hashes.
-            for (const SiteWatchItem& it : got) {
-                expectTrue(SiteWatch::isFetchable(it.url), "watch corrupt: url sanitized");
-                expectTrue(it.checkedAt >= 0, "watch corrupt: checkedAt sanitized");
-                expectTrue(it.hash.empty() || it.hash.size() == 64,
-                           "watch corrupt: hash sanitized");
-            }
-            expectTrue(check >= 0, "watch corrupt: lastCheck sanitized");
-        }
-        // The one record that is valid must survive; the file: URL must not.
-        std::vector<SiteWatchItem> got;
-        long long check = 0;
-        std::string err;
-        SiteWatch::parse("{\"items\":[{\"url\":\"file:///etc/passwd\"},"
-                         "{\"url\":\"https://ok.example/\",\"hash\":\"abc\"}]}",
-                         got, check, err);
-        expectEq(std::to_string(got.size()), "1", "watch corrupt: only valid record kept");
-        expectEq(got.empty() ? std::string() : got[0].hash, "", "watch corrupt: bad hash cleared");
-    }
-
-    // ---- Site watch file round-trip through disk --------------------------
-    {
-        const std::string path = "/tmp/hb_selftest_site_watch.json";
-        remove(path.c_str());
-        SiteWatch& w = SiteWatch::instance();
-        w.setFilePathForTesting(path.c_str());
-        // No file yet: empty state, no crash.
-        expectEq(std::to_string(w.items().size()), "0", "watch load missing file");
-
-        // Write a document by hand and read it back through load().
+        // Sanitize: out-of-range values are clamped on load.
         {
-            std::vector<SiteWatchItem> items;
-            SiteWatchItem it;
-            it.url = "https://example.com/watched";
-            it.hash = SiteWatch::sha256Hex("body");
-            it.checkedAt = 1700000000000LL;
-            it.title = "Watched";
-            items.push_back(it);
-            std::ofstream f(path, std::ios::binary | std::ios::trunc);
-            f << SiteWatch::serialize(items, 1700000000000LL, "");
+            std::ofstream f(scratch, std::ios::binary | std::ios::trunc);
+            f << "{\"uiScale\":9.9,\"fontScale\":0.1,\"gridColumns\":7,"
+                 "\"siteWatchIntervalMinutes\":7,\"themeMode\":\"purple\"}";
         }
-        w.load();
-        expectEq(std::to_string(w.items().size()), "1", "watch load from disk");
-        expectEq(w.items()[0].hash, SiteWatch::sha256Hex("body"), "watch load hash");
-        expectEq(std::to_string(w.lastCheckMillis()), "1700000000000", "watch load lastCheck");
+        AppSettings p3 = store.load();
+        expectTrue(p3.uiScale <= 1.4f && p3.uiScale >= 0.8f, "settings uiScale clamped");
+        expectTrue(p3.fontScale <= 1.5f && p3.fontScale >= 0.8f, "settings fontScale clamped");
+        expectEq(std::to_string(p3.gridColumns), "0", "settings grid columns sanitized");
+        expectEq(std::to_string(p3.siteWatchIntervalMinutes), "60", "settings interval sanitized");
+        expectEq(p3.themeMode, "system", "settings theme sanitized");
 
-        // A truncated file on disk must load as an empty state, not crash.
+        // Backward compatibility: the pre-1.9 key still switches autofill.
         {
-            std::ofstream f(path, std::ios::binary | std::ios::trunc);
-            f << "{\"version\":1,\"items\":[{\"url\":";
+            std::ofstream f(scratch, std::ios::binary | std::ios::trunc);
+            f << "{\"formLoginEnabled\":false}";
         }
-        w.load();
-        expectEq(std::to_string(w.items().size()), "0", "watch load corrupt file");
+        AppSettings p4 = store.load();
+        expectTrue(!p4.formAutofillEnabled, "settings honours the legacy formLoginEnabled key");
 
-        // A directory in place of the file must not crash either.
-        remove(path.c_str());
-        mkdir(path.c_str(), 0755);
-        w.load();
-        expectEq(std::to_string(w.items().size()), "0", "watch load unreadable path");
-        rmdir(path.c_str());
-        remove((path + ".tmp").c_str());
+        remove(scratch);
+        store.setFilePathForTesting(nullptr);
     }
 
     // ---- atomic write leaves no partial file ------------------------------

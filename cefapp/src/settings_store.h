@@ -53,6 +53,11 @@ public:
     void save(const AppSettings& s);
     std::string filePath() const;
 
+    /// Redirect the store at a scratch file (self-test only). Pass nullptr to
+    /// restore the real path. Lets the test exercise load()/save() themselves
+    /// rather than re-implementing the parsing next to them.
+    void setFilePathForTesting(const char* path);
+
 private:
     SettingsStore();
     std::string filePath_;

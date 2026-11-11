@@ -19,6 +19,16 @@ SettingsStore::SettingsStore() {
 
 std::string SettingsStore::filePath() const { return filePath_; }
 
+void SettingsStore::setFilePathForTesting(const char* path) {
+    if (path && path[0]) {
+        filePath_ = path;
+    } else {
+        const char* home = getenv("HOME");
+        filePath_ = std::string(home ? home : ".") +
+                    "/Library/Application Support/Half-Browser/settings.json";
+    }
+}
+
 AppSettings SettingsStore::load() {
     AppSettings s;
     std::ifstream f(filePath_);
