@@ -106,9 +106,16 @@ void cleanupStaleConfigs() {
     struct dirent* entry;
     while ((entry = readdir(d)) != nullptr) {
         std::string name(entry->d_name);
-        if (name.size() > 5 && name.compare(name.size() - 5, 5, ".conf") == 0) {
-            secureWipeFile(dir + "/" + name);
+        // Only files this app writes: "hb<alnum>.conf". Anything else in the
+        // directory belongs to someone else and must not be touched.
+        if (name.size() <= 7 || name.compare(0, 2, "hb") != 0) continue;
+        if (name.compare(name.size() - 5, 5, ".conf") != 0) continue;
+        bool alnum = true;
+        for (size_t i = 2; i + 5 < name.size(); ++i) {
+            if (!isalnum((unsigned char)name[i])) { alnum = false; break; }
         }
+        if (!alnum) continue;
+        secureWipeFile(dir + "/" + name);
     }
     closedir(d);
 }

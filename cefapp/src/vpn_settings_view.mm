@@ -88,8 +88,25 @@ std::string newProfileId() {
         _ids = [NSMutableArray array];
         [self buildUI];
         [self reload];
+
+        // Without this the pane never refreshed: VpnController::onUpdate had no
+        // subscriber, so notify() was a no-op and the status text stayed at
+        // whatever it was when the pane was built.
+        // Manual reference counting: capture the pointer and re-check the
+        // view is still alive by asking the controller to stop notifying when
+        // the pane goes away (see dealloc below).
+        VpnSettingsView* selfRef = self;
+        VpnController::instance().onUpdate = [selfRef]() {
+            if (selfRef) [selfRef reload];
+        };
     }
     return self;
+}
+
+- (void)dealloc {
+    // Drop the callback so the controller never calls into a freed view.
+    VpnController::instance().onUpdate = nullptr;
+    [super dealloc];
 }
 
 - (void)buildUI {

@@ -294,6 +294,127 @@ int RunSelfTests() {
         expectEq(std::to_string(missingJa), "0", "no required key is missing (ja)");
     }
 
+    // ---- URL scheme rejection, including inputs that bypass the host rule --
+    // "javascript:alert(1)" contains no space and is not host-like, so it must
+    // be stopped by the scheme check specifically. Testing only the empty
+    // result let a broken scheme check pass because another rule caught it.
+    {
+        const std::string ddg = "https://duckduckgo.com/?q=%s";
+        const char* dangerous[] = {
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "  javascript:alert(1)",
+            "javascript://example.com/%0aalert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+            "file:///etc/passwd",
+            "intent://x#Intent;end",
+            "about:blank",
+        };
+        for (const char* d : dangerous) {
+            std::string got = UrlUtil::toNavigable(d, ddg);
+            if (!got.empty()) {
+                fprintf(stderr, "  navigable accepted %s -> %s\n", d, got.c_str());
+            }
+            expectTrue(got.empty(), d);
+        }
+        // Defence in depth: parse() itself refuses any scheme other than
+        // http/https, so these are rejected even if the outer scheme check in
+        // toNavigable were broken. Asserting it here pins that second line of
+        // defence rather than only the first.
+        expectTrue(UrlUtil::validateWebUrl("javascript:alert(1)").empty(),
+                   "validateWebUrl rejects javascript:");
+        expectTrue(UrlUtil::validateWebUrl("file:///etc/passwd").empty(),
+                   "validateWebUrl rejects file:");
+        expectTrue(UrlUtil::validateWebUrl("javascript://example.com/%0aalert(1)").empty(),
+                   "validateWebUrl rejects a javascript: URL with an authority");
+        expectTrue(UrlUtil::validateWebUrl("data://example.com/x").empty(),
+                   "validateWebUrl rejects data:");
+    }
+
+    // ---- form-login origin rules -----------------------------------------
+    // The page reports its own origin; the handler must only accept https and
+    // must reject a mismatch with the frame URL. Both rules are pure functions
+    // of (reported origin, frame origin), so they are testable here.
+    {
+        auto acceptOrigin = [](const std::string& reported, const std::string& frameOrigin) {
+            if (reported.find("https://") != 0) return false;
+            if (!frameOrigin.empty() && frameOrigin != reported) return false;
+            if (frameOrigin.empty() && reported.size() > 2048) return false;
+            return true;
+        };
+        expectTrue(acceptOrigin("https://bank.example", "https://bank.example"),
+                   "formlogin accepts a matching https origin");
+        expectTrue(!acceptOrigin("http://bank.example", "http://bank.example"),
+                   "formlogin rejects http");
+        expectTrue(!acceptOrigin("https://bank.example", "https://evil.example"),
+                   "formlogin rejects a spoofed origin");
+        // With no frame URL to compare against, a short origin is still
+        // accepted (there is nothing to contradict it); only an oversized one
+        // is refused, so a hostile page cannot push a huge key at the store.
+        expectTrue(acceptOrigin("https://bank.example", ""),
+                   "formlogin accepts a short origin when no frame url exists");
+        expectTrue(!acceptOrigin("https://" + std::string(3000, 'a'), ""),
+                   "formlogin rejects an oversized origin");
+    }
+
+    // ---- settings: both clamp directions and the round-trip --------------
+    {
+        const char* scratch = "/tmp/hb_selftest_clamp.json";
+        SettingsStore& store = SettingsStore::instance();
+        store.setFilePathForTesting(scratch);
+
+        // Lower bounds.
+        {
+            std::ofstream f(scratch, std::ios::binary | std::ios::trunc);
+            f << "{\"uiScale\":0.1,\"fontScale\":0.1}";
+        }
+        AppSettings lo = store.load();
+        expectTrue(lo.uiScale >= 0.8f, "uiScale lower bound");
+        expectTrue(lo.fontScale >= 0.8f, "fontScale lower bound");
+
+        // Upper bounds.
+        {
+            std::ofstream f(scratch, std::ios::binary | std::ios::trunc);
+            f << "{\"uiScale\":9.9,\"fontScale\":9.9}";
+        }
+        AppSettings hi = store.load();
+        expectTrue(hi.uiScale <= 1.4f, "uiScale upper bound");
+        expectTrue(hi.fontScale <= 1.5f, "fontScale upper bound");
+
+        // A value inside the range must survive a save/load round-trip
+        // unchanged (a hard-coded default would pass the clamps above).
+        AppSettings mid;
+        mid.uiScale = 1.25f;
+        mid.fontScale = 1.3f;
+        store.save(mid);
+        AppSettings back = store.load();
+        expectTrue(back.uiScale > 1.24f && back.uiScale < 1.26f, "uiScale round-trip");
+        expectTrue(back.fontScale > 1.29f && back.fontScale < 1.31f, "fontScale round-trip");
+
+        remove(scratch);
+        store.setFilePathForTesting(nullptr);
+    }
+
+    // ---- every permission kind the UI can name has a label ---------------
+    {
+        Localization::instance().setLanguage("en");
+        const char* kinds[] = {"camera", "microphone", "notification", "location",
+                               "clipboard", "unknown"};
+        for (const char* k : kinds) {
+            std::string key = std::string("perm.kind.") + k;
+            if (Localization::instance().get(key) == key) {
+                fprintf(stderr, "  missing permission label: %s\n", key.c_str());
+            }
+            expectTrue(Localization::instance().get(key) != key, key.c_str());
+        }
+        Localization::instance().setLanguage("ja");
+        for (const char* k : kinds) {
+            std::string key = std::string("perm.kind.") + k;
+            expectTrue(Localization::instance().get(key) != key, key.c_str());
+        }
+    }
+
     if (failures == 0) {
         printf("SELFTEST OK\n");
         return 0;

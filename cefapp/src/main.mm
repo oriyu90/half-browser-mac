@@ -645,12 +645,19 @@ int main(int argc, char* argv[]) {
                                           dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
                                           5 * NSEC_PER_SEC, 1 * NSEC_PER_SEC);
                 dispatch_source_set_event_handler(netTimer, ^{
+                    // Only worth polling while a tunnel is up: an idle browser
+                    // should not spawn /sbin/route every 5 s indefinitely.
+                    if (VpnController::instance().state() != VpnConnState::Connected) {
+                        return;
+                    }
                     static std::string lastSignature;
                     std::string sig = VpnController::instance().defaultRouteSignature();
-                    if (!lastSignature.empty() && !sig.empty() && sig != lastSignature) {
-                        VpnController::instance().onNetworkChanged();
+                    if (!sig.empty()) {
+                        if (!lastSignature.empty() && sig != lastSignature) {
+                            VpnController::instance().onNetworkChanged();
+                        }
+                        lastSignature = sig;
                     }
-                    if (!sig.empty()) lastSignature = sig;
                 });
                 dispatch_resume(netTimer);
             }
