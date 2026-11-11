@@ -81,6 +81,18 @@ std::vector<HistoryEntry> HistoryStore::all() const {
     return entries_;
 }
 
+bool HistoryStore::removeUrl(const std::string& url) {
+    std::string canonical = UrlUtil::canonicalForCompare(url);
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        if (UrlUtil::canonicalForCompare(entries_[i].url) == canonical) {
+            entries_.erase(entries_.begin() + (long)i);
+            save();
+            return true;
+        }
+    }
+    return false;
+}
+
 void HistoryStore::clear() {
     entries_.clear();
     save();

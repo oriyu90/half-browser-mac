@@ -16,6 +16,8 @@ public:
     void record(const std::string& url, const std::string& title, long long now);
     std::vector<HistoryEntry> all() const;
     void clear();
+    /// Removes one entry by URL (canonical compare). Returns true when removed.
+    bool removeUrl(const std::string& url);
     void load();
     void save();
 

@@ -16,6 +16,7 @@
 #include "home_window.h"
 #include "settings_store.h"
 #include "localization.h"
+#include "history_window.h"
 #include "url_util.h"
 #include "include/wrapper/cef_library_loader.h"
 
@@ -30,6 +31,8 @@ public:
 static CefRefPtr<SimpleHandler> g_handler;
 static NSTextField* g_addressField = nullptr;
 static NSWindow* g_window = nullptr;
+static NSPanel* g_findPanel = nil;
+static NSSearchField* g_findField = nil;
 
 @interface ToolbarDelegate : NSObject <NSToolbarDelegate>
 @end
@@ -284,6 +287,83 @@ static NSWindow* g_window = nullptr;
         }
     }
 }
+// ---- Find / zoom / history (v1.9.0) -------------------------------------
+
+- (void)showFind:(id)sender {
+    if (!g_handler || !g_handler->GetBrowser()) return;
+    if (!g_findPanel) {
+        g_findPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 360, 52)
+            styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow)
+            backing:NSBackingStoreBuffered defer:NO];
+        g_findPanel.title = [NSString stringWithUTF8String:L("find.title").c_str()];
+        g_findPanel.floatingPanel = YES;
+
+        NSView* content = g_findPanel.contentView;
+        g_findField = [[NSSearchField alloc] initWithFrame:NSMakeRect(12, 14, 240, 24)];
+        g_findField.placeholderString = [NSString stringWithUTF8String:L("find.placeholder").c_str()];
+        g_findField.target = self;
+        g_findField.action = @selector(findChanged:);
+        [content addSubview:g_findField];
+
+        NSButton* prev = [[NSButton alloc] initWithFrame:NSMakeRect(258, 13, 44, 26)];
+        prev.title = [NSString stringWithUTF8String:L("find.previous").c_str()];
+        prev.bezelStyle = NSBezelStyleRounded;
+        prev.target = self;
+        prev.action = @selector(findPrevious:);
+        [content addSubview:prev];
+
+        NSButton* next = [[NSButton alloc] initWithFrame:NSMakeRect(304, 13, 44, 26)];
+        next.title = [NSString stringWithUTF8String:L("find.next").c_str()];
+        next.bezelStyle = NSBezelStyleRounded;
+        next.target = self;
+        next.action = @selector(findNext:);
+        [content addSubview:next];
+    }
+    [g_findPanel makeKeyAndOrderFront:nil];
+    [g_findPanel center];
+    [g_findPanel makeFirstResponder:g_findField];
+}
+
+- (void)findChanged:(id)sender {
+    [self runFind:YES];
+}
+
+- (void)findNext:(id)sender {
+    [self runFind:YES];
+}
+
+- (void)findPrevious:(id)sender {
+    [self runFind:NO];
+}
+
+- (void)runFind:(BOOL)forward {
+    if (!g_handler || !g_handler->GetBrowser() || !g_findField) return;
+    std::string text = [[g_findField stringValue] UTF8String];
+    // An empty query clears the highlight instead of searching for "".
+    g_handler->GetBrowser()->GetHost()->Find(text, forward, false, 1);
+}
+
+- (void)zoomIn:(id)sender {
+    if (!g_handler || !g_handler->GetBrowser()) return;
+    double level = g_handler->GetBrowser()->GetHost()->GetZoomLevel();
+    g_handler->GetBrowser()->GetHost()->SetZoomLevel(level + 0.5);
+}
+
+- (void)zoomOut:(id)sender {
+    if (!g_handler || !g_handler->GetBrowser()) return;
+    double level = g_handler->GetBrowser()->GetHost()->GetZoomLevel();
+    g_handler->GetBrowser()->GetHost()->SetZoomLevel(level - 0.5);
+}
+
+- (void)zoomReset:(id)sender {
+    if (!g_handler || !g_handler->GetBrowser()) return;
+    g_handler->GetBrowser()->GetHost()->SetZoomLevel(0);
+}
+
+- (void)showHistory:(id)sender {
+    [[HistoryWindowController shared] showWindow];
+}
+
 @end
 
 static ToolbarDelegate* g_toolbarDelegate = nil;
@@ -403,6 +483,22 @@ int main(int argc, char* argv[]) {
         NSMenuItem* reloadItem = [viewMenu itemWithTitle:[NSString stringWithUTF8String:L("menu.reload").c_str()]];
         reloadItem.target = g_toolbarDelegate;
 
+        // Find and zoom: the entries existed in the localized catalog but were
+        // never added to the menu, so the features were unreachable.
+        [viewMenu addItem:[NSMenuItem separatorItem]];
+        [viewMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.find").c_str()] action:@selector(showFind:) keyEquivalent:@"f"];
+        NSMenuItem* findItem = [viewMenu itemWithTitle:[NSString stringWithUTF8String:L("menu.find").c_str()]];
+        findItem.target = g_toolbarDelegate;
+
+        NSMenuItem* zoomMenuItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithUTF8String:L("menu.zoom").c_str()] action:nil keyEquivalent:@""];
+        NSMenu* zoomMenu = [[NSMenu alloc] initWithTitle:[NSString stringWithUTF8String:L("menu.zoom").c_str()]];
+        [zoomMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.zoom_in").c_str()] action:@selector(zoomIn:) keyEquivalent:@"+"];
+        [zoomMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.zoom_out").c_str()] action:@selector(zoomOut:) keyEquivalent:@"-"];
+        [zoomMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.actual_size").c_str()] action:@selector(zoomReset:) keyEquivalent:@"0"];
+        for (NSMenuItem* it in zoomMenu.itemArray) it.target = g_toolbarDelegate;
+        [zoomMenuItem setSubmenu:zoomMenu];
+        [viewMenu addItem:zoomMenuItem];
+
         NSMenuItem* themeMenuItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithUTF8String:L("menu.theme").c_str()] action:nil keyEquivalent:@""];
         NSMenu* themeMenu = [[NSMenu alloc] initWithTitle:[NSString stringWithUTF8String:L("menu.theme").c_str()]];
         [themeMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.theme.light").c_str()] action:@selector(setLightTheme:) keyEquivalent:@""];
@@ -427,6 +523,10 @@ int main(int argc, char* argv[]) {
         [bookmarksMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.home").c_str()] action:@selector(showHome:) keyEquivalent:@""];
         NSMenuItem* homeItem = [bookmarksMenu itemWithTitle:[NSString stringWithUTF8String:L("menu.home").c_str()]];
         homeItem.target = g_toolbarDelegate;
+        [bookmarksMenu addItem:[NSMenuItem separatorItem]];
+        [bookmarksMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.history").c_str()] action:@selector(showHistory:) keyEquivalent:@"y"];
+        NSMenuItem* historyItem = [bookmarksMenu itemWithTitle:[NSString stringWithUTF8String:L("menu.history").c_str()]];
+        historyItem.target = g_toolbarDelegate;
         [bookmarksMenu addItem:[NSMenuItem separatorItem]];
         [bookmarksMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.export_backup").c_str()] action:@selector(exportBackup:) keyEquivalent:@""];
         NSMenuItem* exportItem = [bookmarksMenu itemWithTitle:[NSString stringWithUTF8String:L("menu.export_backup").c_str()]];

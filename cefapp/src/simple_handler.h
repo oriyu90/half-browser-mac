@@ -12,6 +12,7 @@
 #include "include/cef_process_message.h"
 #include "include/cef_values.h"
 #include "include/cef_permission_handler.h"
+#include "browser_handler.h"
 #include <string>
 
 class SimpleHandler : public CefClient,
@@ -30,6 +31,12 @@ public:
     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
     CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
     CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
+    CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return browser_features_; }
+    CefRefPtr<CefJSDialogHandler> GetJSDialogHandler() override { return browser_features_; }
+    CefRefPtr<CefFindHandler> GetFindHandler() override { return browser_features_; }
+    // Note: fullscreen is reported through CefDisplayHandler, which this class
+    // already returns; BrowserHandler::OnFullscreenModeChange is forwarded from
+    // OnFullscreenModeChange below.
 
     // CefLifeSpanHandler
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
@@ -45,6 +52,7 @@ public:
     void OnAddressChange(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString& url) override;
     void OnLoadingStateChange(CefRefPtr<CefBrowser> browser, bool isLoading, bool canGoBack, bool canGoForward) override;
     bool OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_severity_t level, const CefString& message, const CefString& source, int line) override;
+    void OnFullscreenModeChange(CefRefPtr<CefBrowser> browser, bool fullscreen) override;
 
     // CefRequestHandler - SSL
     bool OnCertificateError(CefRefPtr<CefBrowser> browser, cef_errorcode_t cert_error, const CefString& request_url, CefRefPtr<CefSSLInfo> ssl_info, CefRefPtr<CefCallback> callback) override;
@@ -87,6 +95,9 @@ private:
     static CefRefPtr<SimpleHandler> instance_;
 
     CefRefPtr<CefBrowser> browser_;
+    /// Downloads, JS dialogs, fullscreen and find live in their own object so
+    /// this class stays focused on navigation, certificates and auth.
+    CefRefPtr<BrowserHandler> browser_features_;
     bool is_closing_;
     std::string title_;
     std::string url_;

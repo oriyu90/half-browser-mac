@@ -20,7 +20,8 @@
 CefRefPtr<SimpleHandler> SimpleHandler::instance_ = nullptr;
 
 SimpleHandler::SimpleHandler()
-    : is_closing_(false), is_loading_(false), can_go_back_(false), can_go_forward_(false) {}
+    : browser_features_(new BrowserHandler()),
+      is_closing_(false), is_loading_(false), can_go_back_(false), can_go_forward_(false) {}
 
 SimpleHandler::~SimpleHandler() {}
 
@@ -82,6 +83,13 @@ void SimpleHandler::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 
 void SimpleHandler::OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, ErrorCode error_code, const CefString& error_text, const CefString& failed_url) {
     // load error
+}
+
+void SimpleHandler::OnFullscreenModeChange(CefRefPtr<CefBrowser> browser, bool fullscreen) {
+    CEF_REQUIRE_UI_THREAD();
+    if (browser_features_) {
+        browser_features_->OnFullscreenModeChange(browser, fullscreen);
+    }
 }
 
 void SimpleHandler::OnTitleChange(CefRefPtr<CefBrowser> browser, const CefString& title) {

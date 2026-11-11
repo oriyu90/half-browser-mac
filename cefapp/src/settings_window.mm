@@ -7,8 +7,13 @@
 #include "backup_service.h"
 #include "localization.h"
 #include "history_store.h"
+#include "vpn_settings_view.h"
 
 static SettingsWindowController* g_shared = nil;
+
+/// Number of settings tabs (general, appearance, permissions, security, vpn,
+/// backup, about).
+static const int kTabCount = 7;
 
 @implementation SettingsWindowController {
     NSTabView* _tabView;
@@ -44,10 +49,12 @@ static SettingsWindowController* g_shared = nil;
         [NSString stringWithUTF8String:L("settings.tab.appearance").c_str()],
         [NSString stringWithUTF8String:L("settings.tab.permissions").c_str()],
         [NSString stringWithUTF8String:L("settings.tab.security").c_str()],
+        [NSString stringWithUTF8String:L("settings.tab.vpn").c_str()],
         [NSString stringWithUTF8String:L("settings.tab.backup").c_str()],
         [NSString stringWithUTF8String:L("settings.tab.about").c_str()],
     };
-    for (int i = 0; i < 6; i++) {
+    // The VPN pane is index 5; backup and about shift down by one.
+    for (int i = 0; i < kTabCount; i++) {
         NSTabViewItem* item = [[NSTabViewItem alloc] initWithIdentifier:@(i)];
         [item setLabel:titles[i]];
         [item setView:[self buildTabView:i]];
@@ -55,8 +62,8 @@ static SettingsWindowController* g_shared = nil;
     }
 
     NSSegmentedControl* seg = [[NSSegmentedControl alloc] initWithFrame:NSMakeRect(20, 440, 520, 28)];
-    [seg setSegmentCount:6];
-    for (int i = 0; i < 6; i++) [seg setLabel:titles[i] forSegment:i];
+    [seg setSegmentCount:kTabCount];
+    for (int i = 0; i < kTabCount; i++) [seg setLabel:titles[i] forSegment:i];
     [seg setSelectedSegment:0];
     [seg setTarget:self];
     [seg setAction:@selector(tabChanged:)];
@@ -76,6 +83,13 @@ static SettingsWindowController* g_shared = nil;
     AppSettings s = SettingsStore::instance().load();
 
     switch (index) {
+        case 5: {
+            // VPN: profile management plus an honest statement of what macOS
+            // allows (see docs/plan/v1.9.0-parity.md).
+            VpnSettingsView* vpn = [[VpnSettingsView alloc] initWithFrame:NSMakeRect(10, 10, 500, 390)];
+            [v addSubview:vpn];
+            return v;
+        }
         case 0: {
             NSTextField* label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 360, 300, 20)];
             [label setStringValue:[NSString stringWithUTF8String:L("settings.ui_scale").c_str()]];
@@ -231,7 +245,7 @@ static SettingsWindowController* g_shared = nil;
             [v addSubview:importBtn];
             break;
         }
-        case 5: {
+        case 6: {
             NSTextField* title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 360, 480, 24)];
             [title setStringValue:[NSString stringWithUTF8String:L("settings.about_title").c_str()]];
             [title setFont:[NSFont boldSystemFontOfSize:18]];
@@ -241,7 +255,7 @@ static SettingsWindowController* g_shared = nil;
             [v addSubview:title];
 
             NSTextField* version = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 330, 480, 20)];
-            [version setStringValue:[NSString stringWithFormat:[NSString stringWithUTF8String:L("settings.about_version").c_str()], "1.5.1", "156"]];
+            [version setStringValue:[NSString stringWithFormat:[NSString stringWithUTF8String:L("settings.about_version").c_str()], "1.9.0", "156"]];
             [version setBezeled:NO];
             [version setDrawsBackground:NO];
             [version setEditable:NO];

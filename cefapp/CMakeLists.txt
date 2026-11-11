@@ -53,6 +53,10 @@ set(SOURCES
     src/vpn_store.h
     src/vpn_controller.mm
     src/vpn_controller.h
+    src/vpn_settings_view.mm
+    src/vpn_settings_view.h
+    src/history_window.mm
+    src/history_window.h
     src/url_util.mm
     src/url_util.h
     src/localization.mm
