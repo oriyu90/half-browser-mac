@@ -26,35 +26,93 @@ std::string FaviconService::cachePath(const std::string& url) {
 }
 
 std::string FaviconService::fetchFavicon(const std::string& pageUrl) {
+    // Cache-only. The previous implementation performed a synchronous network
+    // request here, and this is called from the collection view's item
+    // provider, so every redraw blocked the UI thread on DNS + TCP. Fetching
+    // now happens in fetchFaviconAsync; this stays a fast cache lookup.
     std::string cached = cachePath(pageUrl);
     struct stat st;
     if (stat(cached.c_str(), &st) == 0) return cached;
+    return "";
+}
 
-    // Try to fetch /favicon.ico
+void FaviconService::fetchFaviconAsync(const std::string& pageUrl, std::function<void(std::string)> done) {
+    std::string cached = cachePath(pageUrl);
+    struct stat st;
+    if (stat(cached.c_str(), &st) == 0) {
+        if (done) done(cached);
+        return;
+    }
     NSString* nsUrl = [NSString stringWithUTF8String:pageUrl.c_str()];
-    NSURL* url = [NSURL URLWithString:nsUrl];
-    if (!url) return "";
+    NSURL* url = nsUrl ? [NSURL URLWithString:nsUrl] : nil;
+    if (!url) {
+        if (done) done("");
+        return;
+    }
     NSURL* faviconUrl = [NSURL URLWithString:@"/favicon.ico" relativeToURL:url];
-    NSData* data = [NSData dataWithContentsOfURL:faviconUrl options:0 error:nil];
-    if (!data || data.length == 0) return "";
-    [data writeToFile:[NSString stringWithUTF8String:cached.c_str()] atomically:YES];
-    return cached;
+    if (!faviconUrl) {
+        if (done) done("");
+        return;
+    }
+    NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:faviconUrl];
+    req.timeoutInterval = 10;
+    NSURLSessionDataTask* task = [[NSURLSession sharedSession]
+        dataTaskWithRequest:req
+          completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+            std::string path;
+            if (data.length > 0 && !error) {
+                // Reject an HTML error page masquerading as an icon.
+                NSHTTPURLResponse* http = (NSHTTPURLResponse*)response;
+                BOOL ok = YES;
+                if ([http isKindOfClass:[NSHTTPURLResponse class]]) {
+                    ok = (http.statusCode >= 200 && http.statusCode < 300);
+                }
+                if (ok && [data writeToFile:[NSString stringWithUTF8String:cached.c_str()] atomically:YES]) {
+                    path = cached;
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (done) done(path);
+            });
+          }];
+    [task resume];
 }
 
 std::string FaviconService::monogramFor(const std::string& title) {
     if (title.empty()) return "?";
-    // Take first 1-2 characters
+    // Take the first 1-2 characters. The length of a multi-byte character is
+    // read from its lead byte; assuming 3 bytes (as the previous version did)
+    // corrupts 2-byte (Latin-1 supplement) and 4-byte (emoji) characters.
     std::string result;
     size_t i = 0;
-    while (i < title.size() && result.size() < 2) {
-        unsigned char c = title[i];
+    int chars = 0;
+    while (i < title.size() && chars < 2) {
+        unsigned char c = (unsigned char)title[i];
+        size_t len;
         if (c < 0x80) {
-            if (isalnum(c)) result += toupper(c);
-            i++;
+            len = 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            len = 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            len = 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            len = 4;
         } else {
-            result += title.substr(i, 3);
-            i += 3;
+            // Invalid lead byte: skip it rather than emitting broken UTF-8.
+            i++;
+            continue;
         }
+        if (i + len > title.size()) break;
+        if (len == 1) {
+            if (isalnum(c)) {
+                result += (char)toupper(c);
+                chars++;
+            }
+        } else {
+            result += title.substr(i, len);
+            chars++;
+        }
+        i += len;
     }
     if (result.empty()) result = "?";
     return result;

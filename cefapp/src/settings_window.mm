@@ -8,6 +8,7 @@
 #include "localization.h"
 #include "history_store.h"
 #include "vpn_settings_view.h"
+#include "site_watch.h"
 
 static SettingsWindowController* g_shared = nil;
 
@@ -17,6 +18,8 @@ static const int kTabCount = 7;
 
 @implementation SettingsWindowController {
     NSTabView* _tabView;
+    /// Keeps the site-watch status line current while the window is open.
+    NSTimer* _statusTimer;
 }
 
 + (instancetype)shared {
@@ -35,9 +38,28 @@ static const int kTabCount = 7;
     [window center];
     self = [super initWithWindow:window];
     if (self) {
+        // NSWindowController is not the window delegate by default; without
+        // this, windowWillClose: would never run and the timer would leak.
+        [window setDelegate:self];
         [self buildUI];
+        // Refresh "last check" in place every 5 s; the timer is invalidated
+        // when the window closes so it never outlives the controller.
+        _statusTimer = [NSTimer scheduledTimerWithTimeInterval:5.0
+                                                        repeats:YES
+                                                          block:^(NSTimer* t) {
+            (void)t;
+            SettingsWindowController* c = [SettingsWindowController shared];
+            if (![[c window] isVisible]) return;
+            [c refreshSiteWatchStatus];
+        }];
     }
     return self;
+}
+
+- (void)windowWillClose:(NSNotification*)note {
+    (void)note;
+    [_statusTimer invalidate];
+    _statusTimer = nil;
 }
 
 - (void)buildUI {
@@ -91,42 +113,46 @@ static const int kTabCount = 7;
             return v;
         }
         case 0: {
-            NSTextField* label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 360, 300, 20)];
-            [label setStringValue:[NSString stringWithUTF8String:L("settings.ui_scale").c_str()]];
-            [label setBezeled:NO];
-            [label setDrawsBackground:NO];
-            [label setEditable:NO];
-            [v addSubview:label];
+            // General tab. Everything is stacked from the top down with a
+            // running `y` cursor so no row can drift into another when a
+            // section is inserted; the site-watch block sits at the bottom
+            // under a separator where there is free space.
+            const CGFloat left = 20;
+            const CGFloat width = 460;
+            CGFloat y = 360;
+            const CGFloat labelH = 20;
+            const CGFloat controlH = 24;
+            const CGFloat gap = 8;
 
-            NSSlider* slider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 330, 300, 24)];
+            NSTextField* label = [self plainLabel:[NSString stringWithUTF8String:L("settings.ui_scale").c_str()] frame:NSMakeRect(left, y, width, labelH)];
+            [v addSubview:label];
+            y -= 30;
+
+            NSSlider* slider = [[NSSlider alloc] initWithFrame:NSMakeRect(left, y, 300, controlH)];
             [slider setMinValue:0.8];
             [slider setMaxValue:1.4];
             [slider setDoubleValue:s.uiScale];
             [slider setTarget:self];
             [slider setAction:@selector(uiScaleChanged:)];
             [v addSubview:slider];
+            y -= 40;
 
-            NSTextField* gridLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 290, 300, 20)];
-            [gridLabel setStringValue:[NSString stringWithUTF8String:L("settings.grid_columns").c_str()]];
-            [gridLabel setBezeled:NO];
-            [gridLabel setDrawsBackground:NO];
-            [gridLabel setEditable:NO];
+            NSTextField* gridLabel = [self plainLabel:[NSString stringWithUTF8String:L("settings.grid_columns").c_str()] frame:NSMakeRect(left, y, width, labelH)];
             [v addSubview:gridLabel];
+            y -= 30;
 
-            NSPopUpButton* gridPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 260, 200, 24)];
+            NSPopUpButton* gridPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(left, y, 200, controlH)];
             [gridPopup addItemsWithTitles:@[@"Auto", @"3", @"4", @"5", @"6", @"8"]];
             [gridPopup setTarget:self];
             [gridPopup setAction:@selector(gridColumnsChanged:)];
             [v addSubview:gridPopup];
+            y -= (controlH + gap + 8);
 
-            NSTextField* langLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 225, 300, 20)];
-            [langLabel setStringValue:[NSString stringWithUTF8String:L("settings.language").c_str()]];
-            [langLabel setBezeled:NO];
-            [langLabel setDrawsBackground:NO];
-            [langLabel setEditable:NO];
+            NSTextField* langLabel = [self plainLabel:[NSString stringWithUTF8String:L("settings.language").c_str()] frame:NSMakeRect(left, y, width, labelH)];
             [v addSubview:langLabel];
+            y -= 30;
 
-            NSPopUpButton* langPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 195, 200, 24)];
+            NSPopUpButton* langPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(left, y, 200, controlH)];
             [langPopup addItemsWithTitles:@[
                 [NSString stringWithUTF8String:L("settings.language.system").c_str()],
                 [NSString stringWithUTF8String:L("settings.language.ja").c_str()],
@@ -137,15 +163,13 @@ static const int kTabCount = 7;
             [langPopup setTarget:self];
             [langPopup setAction:@selector(languageChanged:)];
             [v addSubview:langPopup];
+            y -= (controlH + gap + 8);
 
-            NSTextField* engineLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 160, 300, 20)];
-            [engineLabel setStringValue:[NSString stringWithUTF8String:L("settings.search_engine").c_str()]];
-            [engineLabel setBezeled:NO];
-            [engineLabel setDrawsBackground:NO];
-            [engineLabel setEditable:NO];
+            NSTextField* engineLabel = [self plainLabel:[NSString stringWithUTF8String:L("settings.search_engine").c_str()] frame:NSMakeRect(left, y, width, labelH)];
             [v addSubview:engineLabel];
+            y -= 30;
 
-            NSPopUpButton* enginePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 130, 200, 24)];
+            NSPopUpButton* enginePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(left, y, 200, controlH)];
             [enginePopup addItemsWithTitles:@[@"Google", @"DuckDuckGo", @"Brave Search", @"Ecosia", @"Kagi Search", @"Mojeek"]];
             {
                 NSArray* keys = @[@"google", @"duckduckgo", @"brave", @"ecosia", @"kagi", @"mojeek"];
@@ -155,6 +179,75 @@ static const int kTabCount = 7;
             [enginePopup setTarget:self];
             [enginePopup setAction:@selector(searchEngineChanged:)];
             [v addSubview:enginePopup];
+            y -= (controlH + 14);
+
+            // ---- Site watch ------------------------------------------------
+            NSBox* rule = [[NSBox alloc] initWithFrame:NSMakeRect(left, y, width, 1)];
+            [rule setBoxType:NSBoxSeparator];
+            [v addSubview:rule];
+            y -= 24;
+
+            NSTextField* watchTitle = [self plainLabel:[NSString stringWithUTF8String:L("watch.title").c_str()] frame:NSMakeRect(left, y, width, labelH)];
+            [watchTitle setFont:[NSFont boldSystemFontOfSize:[NSFont systemFontSize]]];
+            [v addSubview:watchTitle];
+            y -= 26;
+
+            NSButton* watchEnabled = [[NSButton alloc] initWithFrame:NSMakeRect(left, y, width, controlH)];
+            [watchEnabled setButtonType:NSButtonTypeSwitch];
+            [watchEnabled setTitle:[NSString stringWithUTF8String:L("watch.enabled").c_str()]];
+            [watchEnabled setState:s.siteWatchEnabled ? NSControlStateValueOn : NSControlStateValueOff];
+            [watchEnabled setTarget:self];
+            [watchEnabled setAction:@selector(siteWatchEnabledChanged:)];
+            [v addSubview:watchEnabled];
+            y -= (controlH + 6);
+
+            NSTextField* intervalLabel = [self plainLabel:[NSString stringWithUTF8String:L("watch.interval").c_str()] frame:NSMakeRect(left, y, 120, labelH)];
+            [v addSubview:intervalLabel];
+
+            NSPopUpButton* intervalPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(left + 130, y - 2, 160, controlH)];
+            [intervalPopup addItemsWithTitles:@[
+                [NSString stringWithUTF8String:L("watch.interval.15").c_str()],
+                [NSString stringWithUTF8String:L("watch.interval.30").c_str()],
+                [NSString stringWithUTF8String:L("watch.interval.60").c_str()],
+                [NSString stringWithUTF8String:L("watch.interval.180").c_str()],
+            ]];
+            {
+                const int minutes[] = {15, 30, 60, 180};
+                for (int i = 0; i < 4; i++) {
+                    if (minutes[i] == s.siteWatchIntervalMinutes) [intervalPopup selectItemAtIndex:i];
+                }
+            }
+            [intervalPopup setTarget:self];
+            [intervalPopup setAction:@selector(siteWatchIntervalChanged:)];
+            [v addSubview:intervalPopup];
+            y -= (controlH + 4);
+
+            NSButton* wifiOnly = [[NSButton alloc] initWithFrame:NSMakeRect(left, y, width, controlH)];
+            [wifiOnly setButtonType:NSButtonTypeSwitch];
+            [wifiOnly setTitle:[NSString stringWithUTF8String:L("watch.wifi_only").c_str()]];
+            [wifiOnly setState:s.siteWatchWifiOnly ? NSControlStateValueOn : NSControlStateValueOff];
+            [wifiOnly setTarget:self];
+            [wifiOnly setAction:@selector(siteWatchWifiOnlyChanged:)];
+            [v addSubview:wifiOnly];
+            y -= (controlH + 2);
+
+            // Last check / last error. Both are single-line labels that are
+            // refreshed in place (see refreshSiteWatchStatus) so the layout
+            // never reflows while the settings window is open.
+            NSTextField* status = [self plainLabel:@"" frame:NSMakeRect(left, y, width, labelH)];
+            [status setFont:[NSFont systemFontOfSize:[NSFont smallSystemFontSize]]];
+            [status setTextColor:[NSColor secondaryLabelColor]];
+            [status setIdentifier:@"watchStatus"];
+            [v addSubview:status];
+            y -= (labelH + 2);
+
+            NSTextField* note = [self plainLabel:[NSString stringWithUTF8String:L("watch.foreground_only").c_str()] frame:NSMakeRect(left, y, width, labelH)];
+            [note setFont:[NSFont systemFontOfSize:[NSFont smallSystemFontSize]]];
+            [note setTextColor:[NSColor secondaryLabelColor]];
+            [v addSubview:note];
+            y -= (labelH + 2);
+
+            [self refreshSiteWatchStatus];
             break;
         }
         case 1: {
@@ -271,6 +364,79 @@ static const int kTabCount = 7;
         }
     }
     return v;
+}
+
+/// Build a borderless, non-editable label. `text` is already-localized text
+/// (callers pass L("key") or an empty string), not a key.
+- (NSTextField*)plainLabel:(NSString*)text frame:(NSRect)frame {
+    NSTextField* label = [[NSTextField alloc] initWithFrame:frame];
+    [label setStringValue:text];
+    [label setBezeled:NO];
+    [label setDrawsBackground:NO];
+    [label setEditable:NO];
+    [label setSelectable:NO];
+    return label;
+}
+
+/// Update the "last check / last error" line of the general tab in place.
+/// Called from the build and from a 5 s timer while the window is visible so
+/// a check that finishes in the background shows up without reopening.
+- (void)refreshSiteWatchStatus {
+    NSTextField* status = nil;
+    for (NSView* sub in [[_tabView selectedTabViewItem] view].subviews) {
+        if ([[sub identifier] isEqual:@"watchStatus"] && [sub isKindOfClass:[NSTextField class]]) {
+            status = (NSTextField*)sub;
+            break;
+        }
+    }
+    if (!status) return;
+
+    SiteWatch& watch = SiteWatch::instance();
+    NSString* text = nil;
+    if (watch.lastCheckMillis() > 0) {
+        NSDate* when = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)watch.lastCheckMillis() / 1000.0];
+        NSDateFormatter* fmt = [[NSDateFormatter alloc] init];
+        [fmt setDateStyle:NSDateFormatterShortStyle];
+        [fmt setTimeStyle:NSDateFormatterShortStyle];
+        NSString* stamp = [fmt stringFromDate:when];
+        text = [NSString stringWithFormat:[NSString stringWithUTF8String:L("watch.last_check").c_str()], stamp];
+    } else {
+        text = [NSString stringWithUTF8String:L("watch.never_checked").c_str()];
+    }
+    std::string err = watch.lastError();
+    if (!err.empty()) {
+        text = [text stringByAppendingFormat:@"  ·  %@",
+                [NSString stringWithFormat:[NSString stringWithUTF8String:L("watch.error").c_str()],
+                 [NSString stringWithUTF8String:err.c_str()]]];
+    }
+    [status setStringValue:text];
+}
+
+- (void)siteWatchEnabledChanged:(NSButton*)sender {
+    AppSettings s = SettingsStore::instance().load();
+    s.siteWatchEnabled = [sender state] == NSControlStateValueOn;
+    SettingsStore::instance().save(s);
+    // applySettings() is what requests notification permission, and only when
+    // the switch is on.
+    SiteWatch::instance().applySettings();
+    if (s.siteWatchEnabled) SiteWatch::instance().checkNow();
+    [self refreshSiteWatchStatus];
+}
+
+- (void)siteWatchIntervalChanged:(NSPopUpButton*)sender {
+    AppSettings s = SettingsStore::instance().load();
+    const int minutes[] = {15, 30, 60, 180};
+    NSInteger idx = [sender indexOfSelectedItem];
+    if (idx < 0 || idx > 3) return;
+    s.siteWatchIntervalMinutes = minutes[idx];
+    SettingsStore::instance().save(s);
+    SiteWatch::instance().applySettings();
+}
+
+- (void)siteWatchWifiOnlyChanged:(NSButton*)sender {
+    AppSettings s = SettingsStore::instance().load();
+    s.siteWatchWifiOnly = [sender state] == NSControlStateValueOn;
+    SettingsStore::instance().save(s);
 }
 
 - (void)uiScaleChanged:(NSSlider*)sender {

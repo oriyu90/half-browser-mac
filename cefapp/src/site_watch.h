@@ -85,6 +85,14 @@ public:
     /// Point the store at a scratch file (self-test only). nullptr restores
     /// the real path.
     void setFilePathForTesting(const char* path);
+    /// Generation stamp used to discard callbacks from a cancelled cycle.
+    int generation() const { return generation_; }
+    /// Main-queue entry points used by the timer and the session callbacks.
+    /// They are public because an Objective-C block cannot reach a private
+    /// C++ member; they are not meant for callers outside this file.
+    void dispatchCycleIfCurrent(int generation);
+    void dispatchResultIfCurrent(int generation, const std::string& url,
+                                 const std::string& body, const std::string& error);
 
 private:
     SiteWatch();

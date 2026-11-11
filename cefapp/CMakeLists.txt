@@ -61,6 +61,8 @@ set(SOURCES
     src/url_util.h
     src/localization.mm
     src/localization.h
+    src/site_watch.mm
+    src/site_watch.h
     src/url_util_test.mm
 )
 
@@ -76,6 +78,7 @@ target_link_libraries(halfbrowser_cef
     "-framework Foundation"
     "-framework Security"
     "-framework UniformTypeIdentifiers"
+    "-framework UserNotifications"
 )
 
 target_include_directories(halfbrowser_cef PRIVATE

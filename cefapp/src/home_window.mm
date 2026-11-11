@@ -12,6 +12,7 @@ static HomeWindowController* g_shared = nil;
     NSCollectionView* _collectionView;
     NSScrollView* _scrollView;
     NSTextField* _searchField;
+    NSFont* _tileFont;
 }
 
 + (instancetype)shared {
@@ -71,7 +72,39 @@ static HomeWindowController* g_shared = nil;
 }
 
 - (void)refreshGrid {
+    // uiScale / fontScale / gridColumns were persisted but never applied, so
+    // changing them in Settings had no visible effect. Apply them here, which
+    // is the single point every path (launch, bookmark change, settings) goes
+    // through.
+    AppSettings s = SettingsStore::instance().load();
+    [self applyLayoutForSettings:s];
     [_collectionView reloadData];
+}
+
+- (void)applyLayoutForSettings:(const AppSettings&)s {
+    NSCollectionViewFlowLayout* layout = (NSCollectionViewFlowLayout*)[_collectionView collectionViewLayout];
+    if (!layout) return;
+
+    CGFloat scale = s.uiScale > 0 ? s.uiScale : 1.0;
+    CGFloat base = 100.0 * scale;
+    [layout setItemSize:NSMakeSize(base, base * 1.2)];
+    [layout setMinimumInteritemSpacing:16 * scale];
+    [layout setMinimumLineSpacing:16 * scale];
+
+    // A fixed column count is expressed by constraining the item width to the
+    // available width divided by the column count.
+    NSRect bounds = _scrollView ? _scrollView.contentView.bounds : NSMakeRect(0, 0, 760, 510);
+    CGFloat available = bounds.size.width - 40;  // section insets
+    if (s.gridColumns > 0 && available > 0) {
+        CGFloat spacing = 16 * scale * (s.gridColumns - 1);
+        CGFloat width = (available - spacing) / s.gridColumns;
+        if (width >= 48) {
+            [layout setItemSize:NSMakeSize(width, width * 1.2)];
+        }
+    }
+
+    // Font scale applies to the tile label.
+    _tileFont = [NSFont systemFontOfSize:11 * (s.fontScale > 0 ? s.fontScale : 1.0)];
 }
 
 - (void)search:(id)sender {
@@ -106,12 +139,29 @@ static HomeWindowController* g_shared = nil;
             [item.textField setAlignment:NSTextAlignmentCenter];
             [item.textField setFont:[NSFont systemFontOfSize:11]];
         }
+        if (item.textField) {
+            [item.textField setFont:_tileFont ? _tileFont : [NSFont systemFontOfSize:11]];
+        }
         if (item.imageView) {
             std::string favicon = FaviconService::fetchFavicon(b.url);
             if (!favicon.empty()) {
                 NSImage* img = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:favicon.c_str()]];
                 if (img) [item.imageView setImage:img];
             } else {
+                // Not cached yet: show the monogram immediately and kick off a
+                // background fetch so the grid never blocks on the network.
+                // Manual reference counting: __weak is unavailable. The block
+                // runs on the main thread immediately after the fetch and the
+                // collection view keeps visible items alive, so the raw pointer
+                // is only used when the item is still part of the view.
+                NSCollectionViewItem* target = item;
+                NSCollectionView* owner = _collectionView;
+                FaviconService::fetchFaviconAsync(b.url, [target, owner](std::string path) {
+                    if (path.empty() || !target) return;
+                    if (target.collectionView != owner) return;
+                    NSImage* img = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:path.c_str()]];
+                    if (img) [target.imageView setImage:img];
+                });
                 // Monogram fallback
                 std::string mono = FaviconService::monogramFor(b.title);
                 NSImage* img = [[NSImage alloc] initWithSize:NSMakeSize(64, 64)];

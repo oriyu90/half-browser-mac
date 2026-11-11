@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "simple_handler.h"
 #include "include/cef_browser.h"
 #include "include/cef_frame.h"
@@ -408,6 +409,116 @@ bool SimpleHandler::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
         [alert addButtonWithTitle:[NSString stringWithUTF8String:L("formlogin.not_now").c_str()]];
         if ([alert runModal] == NSAlertFirstButtonReturn) {
             FormLoginService::saveCredentials(originUrl, username, password);
+        }
+    });
+
+    return true;
+}
+
+// ============================================================
+// File attachment: <input type="file">
+// ============================================================
+bool SimpleHandler::OnFileDialog(CefRefPtr<CefBrowser> browser,
+                                 FileDialogMode mode,
+                                 const CefString& title,
+                                 const CefString& default_file_path,
+                                 const std::vector<CefString>& accept_filters,
+                                 const std::vector<CefString>& accept_extensions,
+                                 const std::vector<CefString>& accept_descriptions,
+                                 CefRefPtr<CefFileDialogCallback> callback) {
+    CEF_REQUIRE_UI_THREAD();
+    // accept_descriptions is the human-readable half of the accept list; the
+    // panel derives its own labels from the UTTypes, so it is unused here.
+    (void)accept_descriptions;
+    if (!callback) return false;
+
+    // Only the open variants are ours. A save dialog is driven by Chromium's
+    // own download handling (BrowserHandler), so returning false there keeps
+    // that path untouched.
+    if (mode != FILE_DIALOG_OPEN && mode != FILE_DIALOG_OPEN_MULTIPLE) return false;
+
+    const bool multiple = (mode == FILE_DIALOG_OPEN_MULTIPLE);
+
+    // Hold the callback across the async hop (CEF does not keep it alive) and
+    // copy every CefString by value so the block never reads a dead frame —
+    // same reason as GetAuthCredentials / OnShowPermissionPrompt.
+    CefRefPtr<CefFileDialogCallback> cb = callback;
+    std::string dialogTitle = title.ToString();
+    std::string defaultPath = default_file_path.ToString();
+    // Resolve the page's accept list to UTTypes up front (still on the UI
+    // thread, before the hop) so the block only carries plain C++ data.
+    // Entries may be extensions (".png"), MIME types ("image/*", "image/png")
+    // or UTIs ("public.jpeg").
+    NSMutableArray<UTType*>* contentTypes = [NSMutableArray array];
+    auto addType = [&contentTypes](UTType* type) {
+        if (type && ![contentTypes containsObject:type]) [contentTypes addObject:type];
+    };
+    for (const CefString& e : accept_extensions) {
+        std::string v = e.ToString();
+        if (v.empty()) continue;
+        if (v[0] == '.') v = v.substr(1);
+        NSString* ext = [NSString stringWithUTF8String:v.c_str()];
+        if (ext) addType([UTType typeWithFilenameExtension:ext]);
+    }
+    if ([contentTypes count] == 0) {
+        for (const CefString& f : accept_filters) {
+            std::string v = f.ToString();
+            if (v.empty()) continue;
+            NSString* raw = [NSString stringWithUTF8String:v.c_str()];
+            if (!raw) continue;
+            if (v[0] == '.') {
+                addType([UTType typeWithFilenameExtension:raw]);
+            } else if (v.find('/') != std::string::npos) {
+                UTType* type = [UTType typeWithMIMEType:raw];
+                // "image/*" is not a concrete type; fall back to the parent
+                // type so the panel still filters to images.
+                if (!type) {
+                    NSString* family = [[raw componentsSeparatedByString:@"/"] firstObject];
+                    if ([family length] > 0) {
+                        type = [UTType typeWithIdentifier:
+                            [NSString stringWithFormat:@"public.%@", family]];
+                    }
+                }
+                addType(type);
+            } else {
+                addType([UTType typeWithIdentifier:raw]);
+            }
+        }
+    }
+    // Copy into a plain array the block can capture without ObjC lifetime
+    // questions: an immutable NSArray retained by the block.
+    NSArray<UTType*>* allowedTypes = [contentTypes copy];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSOpenPanel* panel = [NSOpenPanel openPanel];
+        [panel setCanChooseFiles:YES];
+        [panel setCanChooseDirectories:NO];
+        [panel setAllowsMultipleSelection:multiple ? YES : NO];
+        [panel setResolvesAliases:YES];
+        if (!dialogTitle.empty()) {
+            [panel setMessage:[NSString stringWithUTF8String:dialogTitle.c_str()]];
+        }
+        if (!defaultPath.empty()) {
+            NSString* dir = [NSString stringWithUTF8String:defaultPath.c_str()];
+            if (dir) [panel setDirectoryURL:[NSURL fileURLWithPath:dir]];
+        }
+        if ([allowedTypes count] > 0) {
+            [panel setAllowedContentTypes:allowedTypes];
+        }
+
+        if ([panel runModal] != NSModalResponseOK) {
+            cb->Cancel();
+            return;
+        }
+        std::vector<CefString> paths;
+        for (NSURL* url in [panel URLs]) {
+            NSString* p = [url path];
+            if (p) paths.push_back(CefString([p UTF8String]));
+        }
+        if (paths.empty()) {
+            cb->Cancel();
+        } else {
+            cb->Continue(paths);
         }
     });
 

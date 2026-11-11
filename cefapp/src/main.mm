@@ -17,6 +17,7 @@
 #include "settings_store.h"
 #include "localization.h"
 #include "history_window.h"
+#include "site_watch.h"
 #include "url_util.h"
 #include "include/wrapper/cef_library_loader.h"
 
@@ -570,6 +571,11 @@ int main(int argc, char* argv[]) {
         // Show the home screen at launch (the browser itself sits on about:blank).
         [g_toolbarDelegate showHome:nil];
 
+        // Site watch: macOS has no WorkManager equivalent, so the checks only
+        // run while this process is alive. applySettings() is a no-op (and
+        // never asks for notification permission) unless the user enabled it.
+        SiteWatch::instance().applySettings();
+
         // Persist geometry when the app terminates.
         [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationWillTerminateNotification
                                                           object:nil
@@ -579,6 +585,8 @@ int main(int argc, char* argv[]) {
                 [[NSUserDefaults standardUserDefaults] setObject:NSStringFromRect([g_window frame])
                                                           forKey:@"HBWindowFrame"];
             }
+            // Stop the timer and cancel in-flight fetches before CEF shuts down.
+            SiteWatch::instance().shutdown();
         }];
 
         [NSApp run];

@@ -12,6 +12,7 @@
 #include "include/cef_process_message.h"
 #include "include/cef_values.h"
 #include "include/cef_permission_handler.h"
+#include "include/cef_dialog_handler.h"
 #include "browser_handler.h"
 #include <string>
 
@@ -20,7 +21,8 @@ class SimpleHandler : public CefClient,
                       public CefLoadHandler,
                       public CefDisplayHandler,
                       public CefRequestHandler,
-                      public CefPermissionHandler {
+                      public CefPermissionHandler,
+                      public CefDialogHandler {
 public:
     SimpleHandler();
     ~SimpleHandler() override;
@@ -31,6 +33,7 @@ public:
     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
     CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
     CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
+    CefRefPtr<CefDialogHandler> GetDialogHandler() override { return this; }
     CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return browser_features_; }
     CefRefPtr<CefJSDialogHandler> GetJSDialogHandler() override { return browser_features_; }
     CefRefPtr<CefFindHandler> GetFindHandler() override { return browser_features_; }
@@ -85,6 +88,16 @@ public:
                                 const CefString& requesting_origin,
                                 uint32_t requested_permissions,
                                 CefRefPtr<CefPermissionPromptCallback> callback) override;
+
+    // CefDialogHandler - <input type="file">
+    bool OnFileDialog(CefRefPtr<CefBrowser> browser,
+                      FileDialogMode mode,
+                      const CefString& title,
+                      const CefString& default_file_path,
+                      const std::vector<CefString>& accept_filters,
+                      const std::vector<CefString>& accept_extensions,
+                      const std::vector<CefString>& accept_descriptions,
+                      CefRefPtr<CefFileDialogCallback> callback) override;
 
     // Accessors
     CefRefPtr<CefBrowser> GetBrowser() { return browser_; }

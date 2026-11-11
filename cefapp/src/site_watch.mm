@@ -247,6 +247,8 @@ void SiteWatch::scheduleTimer() {
     if (!running_) return;
     AppSettings s = SettingsStore::instance().load();
     int minutes = sanitizeInterval(s.siteWatchIntervalMinutes);
+    // The run loop owns a repeating timer; CFBridgingRetain takes a second
+    // reference that invalidateTimer() releases exactly once.
     NSTimer* timer = [NSTimer scheduledTimerWithTimeInterval:(NSTimeInterval)minutes * 60.0
                                                      repeats:YES
                                                        block:^(NSTimer* t) {
@@ -256,12 +258,10 @@ void SiteWatch::scheduleTimer() {
     timer_ = (void*)CFBridgingRetain(timer);
     // The first cycle runs shortly after enabling so the user sees a result
     // without waiting a full interval.
-    __block int gen = generation_;
+    int gen = generation_;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        SiteWatch* w = &SiteWatch::instance();
-        if (w->generation_ != gen || !w->running_) return;
-        w->beginCycle();
+        SiteWatch::instance().dispatchCycleIfCurrent(gen);
     });
 }
 
@@ -269,7 +269,7 @@ void SiteWatch::invalidateTimer() {
     if (timer_) {
         NSTimer* timer = (__bridge NSTimer*)timer_;
         [timer invalidate];
-        CFBridgingRelease(timer_);
+        CFRelease(timer_);
         timer_ = nullptr;
     }
 }
@@ -293,6 +293,17 @@ void SiteWatch::checkNow() {
 // ============================================================
 // One check cycle
 // ============================================================
+
+void SiteWatch::dispatchCycleIfCurrent(int generation) {
+    if (generation_ != generation || !running_) return;
+    beginCycle();
+}
+
+void SiteWatch::dispatchResultIfCurrent(int generation, const std::string& url,
+                                        const std::string& body, const std::string& error) {
+    if (generation_ != generation) return;  // cycle was cancelled
+    handleResult(url, body, error);
+}
 
 void SiteWatch::beginCycle() {
     if (!running_ || cycleActive_) return;
@@ -373,7 +384,7 @@ void SiteWatch::fetchNext() {
     cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
     NSURLSession* session = [NSURLSession sessionWithConfiguration:cfg];
 
-    __block int gen = generation_;
+    int gen = generation_;
     NSURLSessionDataTask* task = [session dataTaskWithRequest:req
                                            completionHandler:^(NSData* data, NSURLResponse* response,
                                                                NSError* error) {
@@ -389,9 +400,7 @@ void SiteWatch::fetchNext() {
             body.assign((const char*)[data bytes], len);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            SiteWatch* w = &SiteWatch::instance();
-            if (w->generation_ != gen) return;  // cycle was cancelled
-            w->handleResult(url, body, err);
+            SiteWatch::instance().dispatchResultIfCurrent(gen, url, body, err);
         });
     }];
     NSMutableArray* pending = (__bridge NSMutableArray*)tasks_;
