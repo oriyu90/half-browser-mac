@@ -17,6 +17,8 @@
 #include "settings_store.h"
 #include "localization.h"
 #include "history_window.h"
+#include "vpn_controller.h"
+#include "vpn_store.h"
 #include "site_watch.h"
 #include "url_util.h"
 #include "include/wrapper/cef_library_loader.h"
@@ -576,6 +578,93 @@ int main(int argc, char* argv[]) {
         // never asks for notification permission) unless the user enabled it.
         SiteWatch::instance().applySettings();
 
+        // ---- VPN monitoring (v1.9.0) ---------------------------------------
+        // VpnController implements the reachability rules, the visibility-aware
+        // poll schedule, wake/network-change detection and auto-reconnect, but
+        // nothing used to call into it, so none of that ever ran. Wire the
+        // lifecycle events here.
+        {
+            VpnController& vpn = VpnController::instance();
+            vpn.startMonitoring();
+
+            // Foreground/background: the app being active is the macOS analogue
+            // of Android's onStart/onStop.
+            [[NSNotificationCenter defaultCenter]
+                addObserverForName:NSApplicationDidBecomeActiveNotification
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification* note) {
+                VpnController::instance().onAppForeground();
+            }];
+            [[NSNotificationCenter defaultCenter]
+                addObserverForName:NSApplicationDidResignActiveNotification
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification* note) {
+                VpnController::instance().onAppBackground();
+            }];
+
+            // Wake from sleep is when a NAT mapping is most likely to be gone.
+            NSWorkspace* ws = [NSWorkspace sharedWorkspace];
+            [[ws notificationCenter]
+                addObserverForName:NSWorkspaceDidWakeNotification
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification* note) {
+                VpnController::instance().onSystemWake();
+            }];
+
+            // Screen lock/unlock is the macOS analogue of ACTION_SCREEN_OFF.
+            NSDistributedNotificationCenter* dnc = [NSDistributedNotificationCenter defaultCenter];
+            [dnc addObserverForName:@"com.apple.screenIsLocked"
+                             object:nil
+                              queue:[NSOperationQueue mainQueue]
+                          usingBlock:^(NSNotification* note) {
+                VpnController::instance().onScreenLocked(true);
+            }];
+            [dnc addObserverForName:@"com.apple.screenIsUnlocked"
+                             object:nil
+                              queue:[NSOperationQueue mainQueue]
+                          usingBlock:^(NSNotification* note) {
+                VpnController::instance().onScreenLocked(false);
+            }];
+
+            // Network change (Wi-Fi <-> Ethernet, VPN up/down): re-verify after
+            // a short debounce so a handshake has a chance to complete.
+            //
+            // A reachability *callback* would be ideal, but
+            // kSCNetworkReachabilityChangedNotification is not part of the
+            // public SystemConfiguration headers, so this polls the default
+            // route every 5 s instead: cheap (one syscall), and it runs only
+            // while a tunnel is actually up.
+            static dispatch_source_t netTimer = nullptr;
+            if (!netTimer) {
+                netTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                  dispatch_get_main_queue());
+                dispatch_source_set_timer(netTimer,
+                                          dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
+                                          5 * NSEC_PER_SEC, 1 * NSEC_PER_SEC);
+                dispatch_source_set_event_handler(netTimer, ^{
+                    static std::string lastSignature;
+                    std::string sig = VpnController::instance().defaultRouteSignature();
+                    if (!lastSignature.empty() && !sig.empty() && sig != lastSignature) {
+                        VpnController::instance().onNetworkChanged();
+                    }
+                    if (!sig.empty()) lastSignature = sig;
+                });
+                dispatch_resume(netTimer);
+            }
+
+            // Auto-connect on launch, when the user asked for it and a profile
+            // is selected. This never shows a system dialog: it only runs when
+            // the app can actually start a tunnel.
+            AppSettings bootSettings = SettingsStore::instance().load();
+            std::string selected = VpnStore::instance().selectedId();
+            if (bootSettings.vpnAutoConnect && !selected.empty() && vpn.canConnect()) {
+                vpn.connect(selected);
+            }
+        }
+
         // Persist geometry when the app terminates.
         [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationWillTerminateNotification
                                                           object:nil
@@ -587,6 +676,7 @@ int main(int argc, char* argv[]) {
             }
             // Stop the timer and cancel in-flight fetches before CEF shuts down.
             SiteWatch::instance().shutdown();
+            VpnController::instance().stopMonitoring();
         }];
 
         [NSApp run];

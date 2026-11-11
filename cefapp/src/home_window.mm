@@ -137,9 +137,7 @@ static HomeWindowController* g_shared = nil;
         if (item.textField) {
             [item.textField setStringValue:[NSString stringWithUTF8String:b.title.c_str()]];
             [item.textField setAlignment:NSTextAlignmentCenter];
-            [item.textField setFont:[NSFont systemFontOfSize:11]];
-        }
-        if (item.textField) {
+            // Text scale from Settings (1.0 when unset).
             [item.textField setFont:_tileFont ? _tileFont : [NSFont systemFontOfSize:11]];
         }
         if (item.imageView) {
@@ -150,17 +148,31 @@ static HomeWindowController* g_shared = nil;
             } else {
                 // Not cached yet: show the monogram immediately and kick off a
                 // background fetch so the grid never blocks on the network.
-                // Manual reference counting: __weak is unavailable. The block
-                // runs on the main thread immediately after the fetch and the
-                // collection view keeps visible items alive, so the raw pointer
-                // is only used when the item is still part of the view.
-                NSCollectionViewItem* target = item;
+                //
+                // The completion must NOT capture the item: NSCollectionView
+                // releases items that scroll out of view, and the fetch can
+                // take up to 10 s, so a captured pointer would be a
+                // use-after-free (and testing it with `target.collectionView`
+                // is itself the illegal access). Capture only the URL and look
+                // the item up again on the main thread.
+                std::string faviconUrl = b.url;
                 NSCollectionView* owner = _collectionView;
-                FaviconService::fetchFaviconAsync(b.url, [target, owner](std::string path) {
-                    if (path.empty() || !target) return;
-                    if (target.collectionView != owner) return;
-                    NSImage* img = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:path.c_str()]];
-                    if (img) [target.imageView setImage:img];
+                FaviconService::fetchFaviconAsync(faviconUrl, [owner, faviconUrl](std::string path) {
+                    if (path.empty() || !owner) return;
+                    // Re-resolve the row by URL: the grid may have been
+                    // reordered or reloaded while the fetch was in flight.
+                    auto current = BookmarkStore::instance().all();
+                    NSInteger row = -1;
+                    for (size_t i = 0; i < current.size(); ++i) {
+                        if (current[i].url == faviconUrl) { row = (NSInteger)i; break; }
+                    }
+                    if (row < 0 || row >= [owner numberOfItemsInSection:0]) return;
+                    NSCollectionViewItem* live =
+                        [owner itemAtIndexPath:[NSIndexPath indexPathForItem:row inSection:0]];
+                    if (!live) return;  // not currently on screen: nothing to update
+                    NSImage* img = [[NSImage alloc] initWithContentsOfFile:
+                        [NSString stringWithUTF8String:path.c_str()]];
+                    if (img) [live.imageView setImage:img];
                 });
                 // Monogram fallback
                 std::string mono = FaviconService::monogramFor(b.title);

@@ -209,8 +209,12 @@ std::string newProfileId() {
 
     NSString* stateText = nil;
     if (c.state() == VpnConnState::Connected) {
-        stateText = [NSString stringWithFormat:ns(L("vpn.status_connected")), c.reachability() == VpnReach::Unknown
-            ? "" : [reachabilityLabel(c.reachability()) UTF8String]];
+        // Hold the label in a local so its UTF8String stays valid for the
+        // duration of the format call (a temporary could be released first).
+        NSString* reachText = (c.reachability() == VpnReach::Unknown)
+            ? @"" : reachabilityLabel(c.reachability());
+        stateText = [NSString stringWithFormat:ns(L("vpn.status_connected")),
+                                               [reachText UTF8String]];
         _statusLabel.textColor = reachabilityColor(c.reachability());
     } else if (c.state() == VpnConnState::Connecting) {
         stateText = ns(L("vpn.status_connecting"));

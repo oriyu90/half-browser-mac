@@ -85,6 +85,11 @@ public:
     /// Android's ACTION_SCREEN_OFF).
     void onScreenLocked(bool locked);
 
+    /// A cheap fingerprint of the current default route (interface name plus
+    /// gateway). Comparing two samples detects a network change without a
+    /// reachability callback. Returns "" when it cannot be determined.
+    std::string defaultRouteSignature();
+
     /// Starts/stops the visibility-aware poll timer. Safe to call repeatedly.
     void startMonitoring();
     void stopMonitoring();

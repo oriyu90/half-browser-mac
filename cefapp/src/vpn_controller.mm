@@ -278,6 +278,38 @@ void VpnController::disconnect() {
     notify();
 }
 
+std::string VpnController::defaultRouteSignature() {
+    // `route -n get default` prints the interface and gateway; the first two
+    // matching lines are enough to tell one network from another.
+    std::string out;
+    if (!runCapture("/sbin/route -n get default 2>/dev/null", out)) return "";
+    std::string iface, gateway;
+    size_t pos = 0;
+    while (pos < out.size()) {
+        size_t eol = out.find('\n', pos);
+        std::string line = out.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+        if (line.find("interface:") != std::string::npos) {
+            size_t c = line.find(':');
+            if (c != std::string::npos) iface = line.substr(c + 1);
+        } else if (line.find("gateway:") != std::string::npos) {
+            size_t c = line.find(':');
+            if (c != std::string::npos) gateway = line.substr(c + 1);
+        }
+        if (eol == std::string::npos) break;
+        pos = eol + 1;
+    }
+    // Trim leading spaces.
+    auto trim = [](std::string v) {
+        size_t b = v.find_first_not_of(" \t");
+        size_t e = v.find_last_not_of(" \t\r");
+        return (b == std::string::npos) ? std::string() : v.substr(b, e - b + 1);
+    };
+    iface = trim(iface);
+    gateway = trim(gateway);
+    if (iface.empty() && gateway.empty()) return "";
+    return iface + "|" + gateway;
+}
+
 int64_t VpnController::readHandshakeMillis() const {
     if (activeProfileId_.empty()) return 0;
     std::string out;

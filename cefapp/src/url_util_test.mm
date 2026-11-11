@@ -399,6 +399,45 @@ int RunSelfTests() {
         expectTrue(none.empty(), "autofill is empty without saved credentials");
     }
 
+    // ---- every key the UI asks for must exist in both catalogs ------------
+    // Parity alone is not enough: a key missing from BOTH catalogs passes the
+    // parity check and still shows its raw name in the UI. This list is the
+    // set of keys the code references; it is checked against the catalog.
+    {
+        const char* required[] = {
+            "app.name", "menu.settings", "menu.zoom", "menu.zoom_in", "menu.zoom_out",
+            "menu.actual_size", "menu.find", "menu.history", "menu.cut", "menu.copy",
+            "menu.paste", "menu.select_all", "common.ok", "common.cancel",
+            "ssl.title", "ssl.changed_body", "auth.title", "formlogin.body",
+            "perm.allow", "perm.kind.unknown", "bookmark.save",
+            "settings.title", "settings.tab.vpn", "settings.js_guard",
+            "backup.export_ok", "download.done_title", "jsdialog.alert_title",
+            "history.title", "watch.title", "watch.foreground_only",
+            "vpn.mac_limitation", "vpn.avail.needs_root", "vpn.status_connected",
+            "vpn.err.empty", "vpn.err.no_profile", "vpn.err.config_unreadable",
+            "vpn.err.save_failed", "vpn.err.export_failed",
+        };
+        Localization::instance().setLanguage("en");
+        int missingEn = 0;
+        for (const char* k : required) {
+            // get() falls back to the key itself when it is absent.
+            if (Localization::instance().get(k) == k) {
+                fprintf(stderr, "  missing English key: %s\n", k);
+                missingEn++;
+            }
+        }
+        Localization::instance().setLanguage("ja");
+        int missingJa = 0;
+        for (const char* k : required) {
+            if (Localization::instance().get(k) == k) {
+                fprintf(stderr, "  missing Japanese key: %s\n", k);
+                missingJa++;
+            }
+        }
+        expectEq(std::to_string(missingEn), "0", "no required key is missing (en)");
+        expectEq(std::to_string(missingJa), "0", "no required key is missing (ja)");
+    }
+
     if (failures == 0) {
         printf("SELFTEST OK\n");
         return 0;

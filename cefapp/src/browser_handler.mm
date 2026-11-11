@@ -6,7 +6,9 @@
 #include "settings_store.h"
 #include "include/wrapper/cef_helpers.h"
 #include <chrono>
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -53,8 +55,37 @@ NSString* uniquePath(NSString* dir, NSString* name) {
 // page a fresh allowance, matching the Android DialogBudget lifetime.
 struct BrowserHandler::BudgetHolder {
     HbDialogBudget* budget = nullptr;
+    /// A dialog is currently on screen. NSAlert::runModal nests if a second
+    /// one starts before the first returns, which leaves an unhandled dialog
+    /// behind and freezes the page until the user closes everything. Dialogs
+    /// are therefore serialized: a second one is queued, not shown.
+    bool showing = false;
+    /// Pending dialogs, oldest first. Each entry owns a CefRefPtr.
+    std::vector<std::function<void()>> pending;
     BudgetHolder() : budget(hb_dialog_budget_new()) {}
     ~BudgetHolder() { hb_dialog_budget_free(budget); }
+
+    /// Runs `show` when no dialog is on screen, otherwise defers it.
+    void enqueue(std::function<void()> show) {
+        if (showing) {
+            pending.push_back(std::move(show));
+            return;
+        }
+        showing = true;
+        show();
+    }
+
+    /// Called by the dialog that just finished; starts the next one.
+    void finished() {
+        if (pending.empty()) {
+            showing = false;
+            return;
+        }
+        auto next = std::move(pending.front());
+        pending.erase(pending.begin());
+        // Still `showing`, so a dialog opened from the next one is queued too.
+        next();
+    }
 };
 
 BrowserHandler::BrowserHandler() : budget_(new BudgetHolder()) {}
@@ -154,7 +185,9 @@ bool BrowserHandler::OnJSDialog(CefRefPtr<CefBrowser> browser,
     std::string defaultText = default_prompt_text.ToString();
     std::string origin = origin_url.ToString();
 
+    BudgetHolder* holder = budget_;
     dispatch_async(dispatch_get_main_queue(), ^{
+        holder->enqueue([=]() {
         NSAlert* alert = [[NSAlert alloc] init];
         NSString* title = nil;
         switch (dialog_type) {
@@ -197,6 +230,8 @@ bool BrowserHandler::OnJSDialog(CefRefPtr<CefBrowser> browser,
         } else {
             cb->Continue(true, "");
         }
+        holder->finished();
+        });
     });
     return true;
 }
@@ -217,7 +252,9 @@ bool BrowserHandler::OnBeforeUnloadDialog(CefRefPtr<CefBrowser> browser,
 
     CefRefPtr<CefJSDialogCallback> cb = callback;
     std::string message = message_text.ToString();
+    BudgetHolder* holder = budget_;
     dispatch_async(dispatch_get_main_queue(), ^{
+        holder->enqueue([=]() {
         NSAlert* alert = [[NSAlert alloc] init];
         [alert setMessageText:ns(L("jsdialog.beforeunload_title"))];
         [alert setInformativeText:message.empty() ? ns(L("jsdialog.beforeunload_body"))
@@ -226,6 +263,8 @@ bool BrowserHandler::OnBeforeUnloadDialog(CefRefPtr<CefBrowser> browser,
         [alert addButtonWithTitle:ns(L("jsdialog.stay"))];
         NSModalResponse response = [alert runModal];
         cb->Continue(response == NSAlertFirstButtonReturn, "");
+        holder->finished();
+        });
     });
     return true;
 }

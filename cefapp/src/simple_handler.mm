@@ -537,39 +537,60 @@ bool SimpleHandler::OnRequestMediaAccessPermission(CefRefPtr<CefBrowser> browser
 
     // CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE (1<<1) is the camera,
     // CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE (1<<0) is the microphone.
+    // A page may ask for both at once (a video call), so every requested kind
+    // is tracked separately; storing only one of them would leave the other
+    // permanently unprompted.
     bool hasCamera = (requested_permissions & CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE) != 0;
     bool hasMic = (requested_permissions & CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE) != 0;
-    std::string kind = hasCamera ? "camera" : (hasMic ? "microphone" : "media");
+    std::vector<std::string> kinds;
+    if (hasCamera) kinds.push_back("camera");
+    if (hasMic) kinds.push_back("microphone");
+    if (kinds.empty()) kinds.push_back("media");
+    std::string kind = kinds.front();
 
     // Hold the callback across the async hop (CEF does not keep it alive).
     CefRefPtr<CefMediaAccessCallback> cb = callback;
 
-    // Check stored decision
-    if (SitePermissionStore::instance().isGranted(origin, "camera") ||
-        SitePermissionStore::instance().isGranted(origin, "microphone")) {
-        // Already granted for this origin
-        if (SitePermissionStore::instance().isGranted(origin, kind)) {
-            cb->Continue(requested_permissions);
-            return true;
+    // Everything already granted: answer without a dialog.
+    bool allGranted = true;
+    for (const auto& k : kinds) {
+        if (!SitePermissionStore::instance().isGranted(origin, k)) {
+            allGranted = false;
+            break;
         }
+    }
+    if (allGranted) {
+        cb->Continue(requested_permissions);
+        return true;
+    }
+
+    // The prompt names every requested kind, e.g. "camera, microphone".
+    std::string kindLabel;
+    for (size_t i = 0; i < kinds.size(); ++i) {
+        if (i > 0) kindLabel += ", ";
+        kindLabel += L("perm.kind." + kinds[i]);
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
         NSAlert* alert = [[NSAlert alloc] init];
         [alert setMessageText:[NSString stringWithUTF8String:L("perm.media_title").c_str()]];
-        [alert setInformativeText:[NSString stringWithFormat:[NSString stringWithUTF8String:L("perm.media_body").c_str()], origin.c_str(), L("perm.kind." + kind).c_str()]];
+        [alert setInformativeText:[NSString stringWithFormat:[NSString stringWithUTF8String:L("perm.media_body").c_str()], origin.c_str(), kindLabel.c_str()]];
         [alert addButtonWithTitle:[NSString stringWithUTF8String:L("perm.allow").c_str()]];
         [alert addButtonWithTitle:[NSString stringWithUTF8String:L("perm.block").c_str()]];
         [alert addButtonWithTitle:[NSString stringWithUTF8String:L("perm.allow_once").c_str()]];
 
         NSModalResponse response = [alert runModal];
         if (response == NSAlertFirstButtonReturn) {
-            SitePermissionStore::instance().set(origin, kind, true);
+            for (const auto& k : kinds) {
+                SitePermissionStore::instance().set(origin, k, true);
+            }
             cb->Continue(requested_permissions);
         } else if (response == NSAlertThirdButtonReturn) {
             cb->Continue(requested_permissions);
         } else {
-            SitePermissionStore::instance().set(origin, kind, false);
+            for (const auto& k : kinds) {
+                SitePermissionStore::instance().set(origin, k, false);
+            }
             cb->Cancel();
         }
     });
