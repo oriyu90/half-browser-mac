@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #include "settings_store.h"
+#include "json_util.h"
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
@@ -18,38 +19,6 @@ SettingsStore::SettingsStore() {
 
 std::string SettingsStore::filePath() const { return filePath_; }
 
-static std::string getStr(const std::string& json, const std::string& key, const std::string& def) {
-    size_t p = json.find("\"" + key + "\":\"");
-    if (p == std::string::npos) return def;
-    p += key.size() + 4;
-    size_t e = json.find('"', p);
-    if (e == std::string::npos) return def;
-    return json.substr(p, e - p);
-}
-
-static float getFloat(const std::string& json, const std::string& key, float def) {
-    size_t p = json.find("\"" + key + "\":");
-    if (p == std::string::npos) return def;
-    p += key.size() + 3;
-    try { return std::stof(json.substr(p, 20)); } catch(...) { return def; }
-}
-
-static int getInt(const std::string& json, const std::string& key, int def) {
-    size_t p = json.find("\"" + key + "\":");
-    if (p == std::string::npos) return def;
-    p += key.size() + 3;
-    try { return std::stoi(json.substr(p, 20)); } catch(...) { return def; }
-}
-
-static bool getBool(const std::string& json, const std::string& key, bool def) {
-    size_t p = json.find("\"" + key + "\":");
-    if (p == std::string::npos) return def;
-    p += key.size() + 3;
-    if (json.compare(p, 4, "true") == 0) return true;
-    if (json.compare(p, 5, "false") == 0) return false;
-    return def;
-}
-
 AppSettings SettingsStore::load() {
     AppSettings s;
     std::ifstream f(filePath_);
@@ -59,18 +28,31 @@ AppSettings SettingsStore::load() {
     std::string json = ss.str();
     f.close();
 
-    s.themeMode = getStr(json, "themeMode", "system");
-    s.accentHue = getFloat(json, "accentHue", 222.0f);
-    s.accentSaturation = getFloat(json, "accentSaturation", 0.86f);
-    s.accentTone = getFloat(json, "accentTone", 0.5f);
-    s.uiScale = getFloat(json, "uiScale", 1.0f);
-    s.fontScale = getFloat(json, "fontScale", 1.0f);
-    s.gridColumns = getInt(json, "gridColumns", 0);
-    s.language = getStr(json, "language", "system");
-    s.searchEngine = getStr(json, "searchEngine", "duckduckgo");
-    s.formLoginEnabled = getBool(json, "formLoginEnabled", true);
-    s.fetchBookmarkIcons = getBool(json, "fetchBookmarkIcons", true);
-    s.notificationsEnabled = getBool(json, "notificationsEnabled", false);
+    // Exact-key lookups (JsonUtil matches `"key":` so "accentHue" can never
+    // pick up "accentHueX") with per-field defaults.
+    s.themeMode = JsonUtil::getString(json, "themeMode", s.themeMode);
+    s.accentHue = (float)JsonUtil::getDouble(json, "accentHue", s.accentHue);
+    s.accentSaturation = (float)JsonUtil::getDouble(json, "accentSaturation", s.accentSaturation);
+    s.accentTone = (float)JsonUtil::getDouble(json, "accentTone", s.accentTone);
+    s.uiScale = (float)JsonUtil::getDouble(json, "uiScale", s.uiScale);
+    s.fontScale = (float)JsonUtil::getDouble(json, "fontScale", s.fontScale);
+    s.gridColumns = (int)JsonUtil::getInt(json, "gridColumns", s.gridColumns);
+    s.language = JsonUtil::getString(json, "language", s.language);
+    s.searchEngine = JsonUtil::getString(json, "searchEngine", s.searchEngine);
+    s.fetchBookmarkIcons = JsonUtil::getBool(json, "fetchBookmarkIcons", s.fetchBookmarkIcons);
+    s.notificationsEnabled = JsonUtil::getBool(json, "notificationsEnabled", s.notificationsEnabled);
+
+    // v1.9.0 settings. "formLoginEnabled" is the pre-1.9 key for the same
+    // switch; honour it only when the new key is absent.
+    s.vpnAutoConnect = JsonUtil::getBool(json, "vpnAutoConnect", s.vpnAutoConnect);
+    s.vpnAutoReconnect = JsonUtil::getBool(json, "vpnAutoReconnect", s.vpnAutoReconnect);
+    s.vpnPowerSaver = JsonUtil::getBool(json, "vpnPowerSaver", s.vpnPowerSaver);
+    s.siteWatchEnabled = JsonUtil::getBool(json, "siteWatchEnabled", s.siteWatchEnabled);
+    s.siteWatchIntervalMinutes = (int)JsonUtil::getInt(json, "siteWatchIntervalMinutes", s.siteWatchIntervalMinutes);
+    s.siteWatchWifiOnly = JsonUtil::getBool(json, "siteWatchWifiOnly", s.siteWatchWifiOnly);
+    s.jsGuardEnabled = JsonUtil::getBool(json, "jsGuardEnabled", s.jsGuardEnabled);
+    s.formAutofillEnabled = JsonUtil::getBool(json, "formAutofillEnabled",
+        JsonUtil::getBool(json, "formLoginEnabled", s.formAutofillEnabled));
 
     // Sanitize (mirrors Android Codecs.sanitize).
     if (s.uiScale < 0.8f) s.uiScale = 0.8f;
@@ -94,25 +76,46 @@ AppSettings SettingsStore::load() {
     if (s.language != "system" && s.language != "ja" && s.language != "en") {
         s.language = "system";
     }
+    if (s.siteWatchIntervalMinutes != 15 && s.siteWatchIntervalMinutes != 30 &&
+        s.siteWatchIntervalMinutes != 60 && s.siteWatchIntervalMinutes != 180) {
+        s.siteWatchIntervalMinutes = 60;
+    }
     return s;
 }
 
 void SettingsStore::save(const AppSettings& s) {
-    std::ofstream f(filePath_);
-    if (!f.is_open()) return;
-    f << "{"
-      << "\"themeMode\":\"" << s.themeMode << "\","
+    std::ostringstream out;
+    out << "{"
+      << "\"themeMode\":\"" << JsonUtil::escape(s.themeMode) << "\","
       << "\"accentHue\":" << s.accentHue << ","
       << "\"accentSaturation\":" << s.accentSaturation << ","
       << "\"accentTone\":" << s.accentTone << ","
       << "\"uiScale\":" << s.uiScale << ","
       << "\"fontScale\":" << s.fontScale << ","
       << "\"gridColumns\":" << s.gridColumns << ","
-      << "\"language\":\"" << s.language << "\","
-      << "\"searchEngine\":\"" << s.searchEngine << "\","
-      << "\"formLoginEnabled\":" << (s.formLoginEnabled ? "true" : "false") << ","
+      << "\"language\":\"" << JsonUtil::escape(s.language) << "\","
+      << "\"searchEngine\":\"" << JsonUtil::escape(s.searchEngine) << "\","
       << "\"fetchBookmarkIcons\":" << (s.fetchBookmarkIcons ? "true" : "false") << ","
-      << "\"notificationsEnabled\":" << (s.notificationsEnabled ? "true" : "false")
+      << "\"notificationsEnabled\":" << (s.notificationsEnabled ? "true" : "false") << ","
+      << "\"vpnAutoConnect\":" << (s.vpnAutoConnect ? "true" : "false") << ","
+      << "\"vpnAutoReconnect\":" << (s.vpnAutoReconnect ? "true" : "false") << ","
+      << "\"vpnPowerSaver\":" << (s.vpnPowerSaver ? "true" : "false") << ","
+      << "\"siteWatchEnabled\":" << (s.siteWatchEnabled ? "true" : "false") << ","
+      << "\"siteWatchIntervalMinutes\":" << s.siteWatchIntervalMinutes << ","
+      << "\"siteWatchWifiOnly\":" << (s.siteWatchWifiOnly ? "true" : "false") << ","
+      << "\"jsGuardEnabled\":" << (s.jsGuardEnabled ? "true" : "false") << ","
+      << "\"formAutofillEnabled\":" << (s.formAutofillEnabled ? "true" : "false")
       << "}";
-    f.close();
+
+    // Atomic write: temp file then rename, so a crash mid-write cannot leave a
+    // truncated settings.json behind (same scheme as BookmarkStore::save).
+    std::string tmp = filePath_ + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f.is_open()) return;
+        f << out.str();
+        f.flush();
+        if (!f.good()) return;
+    }
+    rename(tmp.c_str(), filePath_.c_str());
 }

@@ -50,7 +50,7 @@ std::string settingsJson(const AppSettings& s) {
       << ",\"accentHue\":" << s.accentHue
       << ",\"accentSaturation\":" << s.accentSaturation
       << ",\"accentTone\":" << s.accentTone
-      << ",\"formAutofillEnabled\":" << (s.formLoginEnabled ? "true" : "false")
+      << ",\"formAutofillEnabled\":" << (s.formAutofillEnabled ? "true" : "false")
       << ",\"fetchBookmarkIcons\":" << (s.fetchBookmarkIcons ? "true" : "false")
       << "}";
     return o.str();
@@ -67,7 +67,7 @@ void applySettingsJson(const std::string& obj) {
     if (JsonUtil::hasKey(obj, "accentHue")) s.accentHue = (float)JsonUtil::getDouble(obj, "accentHue", s.accentHue);
     if (JsonUtil::hasKey(obj, "accentSaturation")) s.accentSaturation = (float)JsonUtil::getDouble(obj, "accentSaturation", s.accentSaturation);
     if (JsonUtil::hasKey(obj, "accentTone")) s.accentTone = (float)JsonUtil::getDouble(obj, "accentTone", s.accentTone);
-    if (JsonUtil::hasKey(obj, "formAutofillEnabled")) s.formLoginEnabled = JsonUtil::getBool(obj, "formAutofillEnabled", s.formLoginEnabled);
+    if (JsonUtil::hasKey(obj, "formAutofillEnabled")) s.formAutofillEnabled = JsonUtil::getBool(obj, "formAutofillEnabled", s.formAutofillEnabled);
     if (JsonUtil::hasKey(obj, "fetchBookmarkIcons")) s.fetchBookmarkIcons = JsonUtil::getBool(obj, "fetchBookmarkIcons", s.fetchBookmarkIcons);
     SettingsStore::instance().save(s);
 }

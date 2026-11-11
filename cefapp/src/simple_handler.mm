@@ -11,6 +11,8 @@
 #include "form_login.h"
 #include "site_permissions.h"
 #include "localization.h"
+#include "json_util.h"
+#include <mutex>
 #include <string>
 #include <vector>
 #include <dispatch/dispatch.h>
@@ -23,6 +25,10 @@ SimpleHandler::SimpleHandler()
 SimpleHandler::~SimpleHandler() {}
 
 CefRefPtr<SimpleHandler> SimpleHandler::GetInstance() {
+    // CefRefPtr assignment is not atomic: guard the check-then-set so two
+    // threads can never build (and leak) two handlers.
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lock(mu);
     if (!instance_) {
         instance_ = new SimpleHandler();
     }
@@ -66,11 +72,7 @@ void SimpleHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
 void SimpleHandler::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int status_code) {
     if (frame->IsMain()) {
         std::string url = frame->GetURL().ToString();
-        std::string title = title_;
-        if (!url.empty() && url.find("://") != std::string::npos) {
-            time_t now = time(nullptr);
-            HistoryStore::instance().record(url, title, now * 1000);
-        }
+        // History is recorded in OnTitleChange: the title is only final there.
         // Inject form login detection script
         if (url.find("https://") == 0) {
             frame->ExecuteJavaScript(FormLoginService::detectionScript(), frame->GetURL(), 0);
@@ -83,7 +85,21 @@ void SimpleHandler::OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFram
 }
 
 void SimpleHandler::OnTitleChange(CefRefPtr<CefBrowser> browser, const CefString& title) {
-    title_ = title.ToString();
+    std::string newTitle = title.ToString();
+    title_ = newTitle;
+
+    // Record history once the title is known (OnLoadEnd can arrive first and
+    // would store an empty title). Repeat visits of the same URL are merged by
+    // HistoryStore::record's 30-minute window, so recording per title change
+    // does not duplicate entries.
+    if (browser) {
+        std::string url = browser->GetMainFrame() ? browser->GetMainFrame()->GetURL().ToString() : std::string();
+        if (!url.empty() && url.find("://") != std::string::npos) {
+            time_t now = time(nullptr);
+            HistoryStore::instance().record(url, newTitle, (long long)now * 1000);
+        }
+    }
+
     dispatch_async(dispatch_get_main_queue(), ^{
         NSView* view = (NSView*)browser->GetHost()->GetWindowHandle();
         NSWindow* window = [view window];
@@ -108,7 +124,8 @@ void SimpleHandler::OnLoadingStateChange(CefRefPtr<CefBrowser> browser, bool isL
 bool SimpleHandler::OnCertificateError(CefRefPtr<CefBrowser> browser, cef_errorcode_t cert_error, const CefString& request_url, CefRefPtr<CefSSLInfo> ssl_info, CefRefPtr<CefCallback> callback) {
     std::string url = request_url.ToString();
 
-    // Extract host and port from URL
+    // Extract host and port from URL. IPv6 literals are bracketed
+    // ("https://[::1]:8443/") so only the text after ']' can be a port.
     std::string host = "";
     int port = 443;
     size_t scheme_end = url.find("://");
@@ -116,12 +133,32 @@ bool SimpleHandler::OnCertificateError(CefRefPtr<CefBrowser> browser, cef_errorc
         size_t host_start = scheme_end + 3;
         size_t path_start = url.find('/', host_start);
         std::string hostport = (path_start != std::string::npos) ? url.substr(host_start, path_start - host_start) : url.substr(host_start);
-        size_t colon = hostport.find(':');
-        if (colon != std::string::npos) {
-            host = hostport.substr(0, colon);
-            try { port = std::stoi(hostport.substr(colon + 1)); } catch(...) {}
+        std::string portPart;
+        if (!hostport.empty() && hostport[0] == '[') {
+            size_t close = hostport.find(']');
+            if (close != std::string::npos) {
+                host = hostport.substr(0, close + 1);  // keep the brackets
+                if (close + 1 < hostport.size() && hostport[close + 1] == ':') {
+                    portPart = hostport.substr(close + 2);
+                }
+            } else {
+                host = hostport;
+            }
         } else {
-            host = hostport;
+            size_t colon = hostport.find(':');
+            if (colon != std::string::npos) {
+                host = hostport.substr(0, colon);
+                portPart = hostport.substr(colon + 1);
+            } else {
+                host = hostport;
+            }
+        }
+        if (!portPart.empty()) {
+            char* end = nullptr;
+            long parsed = strtol(portPart.c_str(), &end, 10);
+            if (end != portPart.c_str() && end && *end == '\0' && parsed > 0 && parsed <= 65535) {
+                port = (int)parsed;
+            }
         }
     }
 
@@ -163,15 +200,19 @@ bool SimpleHandler::OnCertificateError(CefRefPtr<CefBrowser> browser, cef_errorc
     }
     bool pinMatches = (decision == 0); // Trusted
 
+    // CEF only keeps the callback alive for the duration of this call; hold a
+    // reference so the async block can still answer it.
+    CefRefPtr<CefCallback> cb = callback;
+
     dispatch_async(dispatch_get_main_queue(), ^{
         if (hasPin && pinMatches) {
             // Trusted: proceed silently
-            callback->Continue();
+            cb->Continue();
         } else if (hasPin && !pinMatches) {
             // Changed: warn harder
             NSAlert* alert = [[NSAlert alloc] init];
             [alert setMessageText:[NSString stringWithUTF8String:L("ssl.changed_title").c_str()]];
-            [alert setInformativeText:[NSString stringWithFormat:@"The certificate for %s has changed.\n\nNew SHA-256: %s\nPinned SHA-256: %s\n\nThis could indicate a security issue.\n\nDo you want to proceed?", host.c_str(), fingerprint.c_str(), savedPin.c_str()]];
+            [alert setInformativeText:[NSString stringWithFormat:[NSString stringWithUTF8String:L("ssl.changed_body").c_str()], host.c_str(), fingerprint.c_str(), savedPin.c_str()]];
             [alert addButtonWithTitle:[NSString stringWithUTF8String:L("ssl.proceed_anyway").c_str()]];
             [alert addButtonWithTitle:[NSString stringWithUTF8String:L("ssl.cancel").c_str()]];
             [alert setAlertStyle:NSAlertStyleCritical];
@@ -179,9 +220,9 @@ bool SimpleHandler::OnCertificateError(CefRefPtr<CefBrowser> browser, cef_errorc
             NSModalResponse response = [alert runModal];
             if (response == NSAlertFirstButtonReturn) {
                 KeychainSaveCertPin(host, port, fingerprint);
-                callback->Continue();
+                cb->Continue();
             } else {
-                callback->Cancel();
+                cb->Cancel();
             }
         } else {
             // Unknown: show interstitial
@@ -202,12 +243,12 @@ bool SimpleHandler::OnCertificateError(CefRefPtr<CefBrowser> browser, cef_errorc
             NSModalResponse response = [alert runModal];
             if (canPin && response == NSAlertFirstButtonReturn) {
                 KeychainSaveCertPin(host, port, fingerprint);
-                callback->Continue();
+                cb->Continue();
             } else if ((canPin && response == NSAlertSecondButtonReturn) ||
                        (!canPin && response == NSAlertFirstButtonReturn)) {
-                callback->Continue();
+                cb->Continue();
             } else {
-                callback->Cancel();
+                cb->Cancel();
             }
         }
     });
@@ -228,6 +269,10 @@ bool SimpleHandler::GetAuthCredentials(CefRefPtr<CefBrowser> browser, const CefS
         callback->Continue(CefString(savedUser), CefString(savedPass));
         return true;
     }
+
+    // Hold the callback across the async hop (CEF does not keep it alive), and
+    // copy h/r/s/p by value so the block never reads a dead stack frame.
+    CefRefPtr<CefAuthCallback> cb = callback;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         NSAlert* alert = [[NSAlert alloc] init];
@@ -256,12 +301,12 @@ bool SimpleHandler::GetAuthCredentials(CefRefPtr<CefBrowser> browser, const CefS
             if (s == "https") {
                 KeychainSaveCredential(key, username, password);
             }
-            callback->Continue(
+            cb->Continue(
                 CefString(username),
                 CefString(password)
             );
         } else {
-            callback->Cancel();
+            cb->Cancel();
         }
     });
 
@@ -289,11 +334,11 @@ bool SimpleHandler::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
 
     if (username.empty() || password.empty()) return true;
 
-    // Ask the user whether to remember (https only)
+    // Ask the user whether to remember
     dispatch_async(dispatch_get_main_queue(), ^{
         NSAlert* alert = [[NSAlert alloc] init];
         [alert setMessageText:[NSString stringWithUTF8String:L("formlogin.title").c_str()]];
-        [alert setInformativeText:[NSString stringWithFormat:@"Remember the sign-in for %s?\n\nUser: %s", originUrl.c_str(), username.c_str()]];
+        [alert setInformativeText:[NSString stringWithFormat:[NSString stringWithUTF8String:L("formlogin.body").c_str()], originUrl.c_str(), username.c_str()]];
         [alert addButtonWithTitle:[NSString stringWithUTF8String:L("formlogin.save").c_str()]];
         [alert addButtonWithTitle:[NSString stringWithUTF8String:L("formlogin.not_now").c_str()]];
         if ([alert runModal] == NSAlertFirstButtonReturn) {
@@ -314,16 +359,21 @@ bool SimpleHandler::OnRequestMediaAccessPermission(CefRefPtr<CefBrowser> browser
                                                    CefRefPtr<CefMediaAccessCallback> callback) {
     std::string origin = requesting_origin.ToString();
 
-    // Check stored decision
-    bool hasCamera = (requested_permissions & CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE) != 0;
-    bool hasMic = (requested_permissions & CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE) != 0;
+    // CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE (1<<1) is the camera,
+    // CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE (1<<0) is the microphone.
+    bool hasCamera = (requested_permissions & CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE) != 0;
+    bool hasMic = (requested_permissions & CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE) != 0;
     std::string kind = hasCamera ? "camera" : (hasMic ? "microphone" : "media");
 
+    // Hold the callback across the async hop (CEF does not keep it alive).
+    CefRefPtr<CefMediaAccessCallback> cb = callback;
+
+    // Check stored decision
     if (SitePermissionStore::instance().isGranted(origin, "camera") ||
         SitePermissionStore::instance().isGranted(origin, "microphone")) {
         // Already granted for this origin
         if (SitePermissionStore::instance().isGranted(origin, kind)) {
-            callback->Continue(requested_permissions);
+            cb->Continue(requested_permissions);
             return true;
         }
     }
@@ -339,12 +389,12 @@ bool SimpleHandler::OnRequestMediaAccessPermission(CefRefPtr<CefBrowser> browser
         NSModalResponse response = [alert runModal];
         if (response == NSAlertFirstButtonReturn) {
             SitePermissionStore::instance().set(origin, kind, true);
-            callback->Continue(requested_permissions);
+            cb->Continue(requested_permissions);
         } else if (response == NSAlertThirdButtonReturn) {
-            callback->Continue(requested_permissions);
+            cb->Continue(requested_permissions);
         } else {
             SitePermissionStore::instance().set(origin, kind, false);
-            callback->Cancel();
+            cb->Cancel();
         }
     });
     return true;
@@ -377,26 +427,11 @@ bool SimpleHandler::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
     }
     if (parts.size() < 3) return true;
 
-    // URL-decode
-    auto urlDecode = [](const std::string& s) -> std::string {
-        std::string out;
-        for (size_t i = 0; i < s.size(); i++) {
-            if (s[i] == '%' && i + 2 < s.size()) {
-                int hi = std::stoi(s.substr(i + 1, 2), nullptr, 16);
-                out += (char)hi;
-                i += 2;
-            } else if (s[i] == '+') {
-                out += ' ';
-            } else {
-                out += s[i];
-            }
-        }
-        return out;
-    };
-
-    std::string username = urlDecode(parts[0]);
-    std::string password = urlDecode(parts[1]);
-    std::string origin = urlDecode(parts[2]);
+    // URL-decode (JsonUtil validates the hex digits, so a malformed "%zz"
+    // sequence is passed through instead of throwing).
+    std::string username = JsonUtil::urlDecode(parts[0]);
+    std::string password = JsonUtil::urlDecode(parts[1]);
+    std::string origin = JsonUtil::urlDecode(parts[2]);
 
     if (username.empty() || password.empty()) return true;
     if (origin.find("https://") != 0) return true;
@@ -438,9 +473,12 @@ bool SimpleHandler::OnShowPermissionPrompt(CefRefPtr<CefBrowser> browser,
         kind = "clipboard";
     }
 
+    // Hold the callback across the async hop (CEF does not keep it alive).
+    CefRefPtr<CefPermissionPromptCallback> cb = callback;
+
     // Check stored decision
     if (SitePermissionStore::instance().isGranted(origin, kind)) {
-        callback->Continue(CEF_PERMISSION_RESULT_ACCEPT);
+        cb->Continue(CEF_PERMISSION_RESULT_ACCEPT);
         return true;
     }
 
@@ -455,12 +493,12 @@ bool SimpleHandler::OnShowPermissionPrompt(CefRefPtr<CefBrowser> browser,
         NSModalResponse response = [alert runModal];
         if (response == NSAlertFirstButtonReturn) {
             SitePermissionStore::instance().set(origin, kind, true);
-            callback->Continue(CEF_PERMISSION_RESULT_ACCEPT);
+            cb->Continue(CEF_PERMISSION_RESULT_ACCEPT);
         } else if (response == NSAlertThirdButtonReturn) {
-            callback->Continue(CEF_PERMISSION_RESULT_ACCEPT);
+            cb->Continue(CEF_PERMISSION_RESULT_ACCEPT);
         } else {
             SitePermissionStore::instance().set(origin, kind, false);
-            callback->Continue(CEF_PERMISSION_RESULT_DENY);
+            cb->Continue(CEF_PERMISSION_RESULT_DENY);
         }
     });
     return true;

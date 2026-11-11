@@ -1,6 +1,7 @@
 #ifndef LOCALIZATION_H
 #define LOCALIZATION_H
 #include <string>
+#include <vector>
 
 /// Minimal key-based localization with Japanese and English catalogs.
 /// Every user-visible string in the app goes through L(key).
@@ -15,6 +16,11 @@ public:
 
     /// Look up a key; falls back to English, then to the key itself.
     std::string get(const std::string& key) const;
+
+    /// Every key defined in the English catalog (used by the parity self-test).
+    static std::vector<std::string> englishKeys();
+    /// Every key defined in the Japanese catalog.
+    static std::vector<std::string> japaneseKeys();
 
 private:
     Localization();

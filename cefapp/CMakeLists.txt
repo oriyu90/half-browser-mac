@@ -47,6 +47,12 @@ set(SOURCES
     src/cef_view.h
     src/json_util.mm
     src/json_util.h
+    src/browser_handler.mm
+    src/browser_handler.h
+    src/vpn_store.mm
+    src/vpn_store.h
+    src/vpn_controller.mm
+    src/vpn_controller.h
     src/url_util.mm
     src/url_util.h
     src/localization.mm
@@ -65,6 +71,7 @@ target_link_libraries(halfbrowser_cef
     "-framework Cocoa"
     "-framework Foundation"
     "-framework Security"
+    "-framework UniformTypeIdentifiers"
 )
 
 target_include_directories(halfbrowser_cef PRIVATE

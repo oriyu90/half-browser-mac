@@ -8,6 +8,20 @@
 #include <sys/types.h>
 #include <ctime>
 
+namespace {
+
+// Truncate to at most `maxBytes` UTF-8 bytes without splitting a character:
+// back up off any continuation byte (0b10xxxxxx) and also drop the lead byte
+// whose sequence would be cut.
+std::string truncateUtf8(const std::string& s, size_t maxBytes) {
+    if (s.size() <= maxBytes) return s;
+    size_t end = maxBytes;
+    while (end > 0 && ((unsigned char)s[end] & 0xC0) == 0x80) --end;
+    return s.substr(0, end);
+}
+
+}  // namespace
+
 HistoryStore& HistoryStore::instance() {
     static HistoryStore inst;
     return inst;
@@ -50,7 +64,7 @@ void HistoryStore::record(const std::string& url, const std::string& title, long
     } else {
         HistoryEntry entry;
         entry.url = normalized;
-        entry.title = title.substr(0, 300);
+        entry.title = truncateUtf8(title, 300);
         entry.visitedAt = now;
         entry.visitCount = 1;
         entries_.insert(entries_.begin(), entry);

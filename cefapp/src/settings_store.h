@@ -14,9 +14,36 @@ struct AppSettings {
     int gridColumns = 0;
     std::string language = "system";
     std::string searchEngine = "duckduckgo";
-    bool formLoginEnabled = true;
     bool fetchBookmarkIcons = true;
     bool notificationsEnabled = false;
+
+    // ---- VPN (v1.9.0) ----
+    // Mirrors the Android AppSettings fields so a backup moves between the two
+    // builds without losing the user's choices. Profile ids are not carried in
+    // the backup (profiles contain private keys and stay on the device).
+    /// Connect the selected profile when the app launches.
+    bool vpnAutoConnect = false;
+    /// After the app comes back to the foreground (or a check runs), verify the
+    /// tunnel's handshake and reconnect it when it went stale.
+    bool vpnAutoReconnect = true;
+    /// Send the keepalive every 60 s instead of 25 s (less data, slightly less
+    /// robust behind a strict firewall).
+    bool vpnPowerSaver = false;
+
+    // ---- Site watch (v1.9.0) ----
+    /// Check bookmarked pages in the background and notify on change.
+    bool siteWatchEnabled = false;
+    /// Minutes between checks (15 / 30 / 60 / 180).
+    int siteWatchIntervalMinutes = 60;
+    /// Only check while a Wi-Fi interface is the default route.
+    bool siteWatchWifiOnly = false;
+
+    // ---- Browser behaviour (v1.9.0) ----
+    /// Defence against hostile in-page JavaScript (dialog rate limits,
+    /// scripted popups, javascript: navigation).
+    bool jsGuardEnabled = true;
+    /// Fill saved HTML form logins on https pages. Never submits automatically.
+    bool formAutofillEnabled = true;
 };
 
 class SettingsStore {

@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <string>
 
 #include "include/cef_app.h"
@@ -81,8 +82,15 @@ static NSWindow* g_window = nullptr;
         field.action = @selector(navigate:);
         g_addressField = field;
         item.view = field;
-        item.minSize = NSMakeSize(200, 24);
-        item.maxSize = NSMakeSize(600, 24);
+        // NSToolbarItem.minSize/maxSize are deprecated (macOS 12): size the
+        // field with Auto Layout instead.
+        field.translatesAutoresizingMaskIntoConstraints = NO;
+        [[field.widthAnchor constraintGreaterThanOrEqualToConstant:200] setActive:YES];
+        [[field.widthAnchor constraintLessThanOrEqualToConstant:600] setActive:YES];
+        NSLayoutConstraint* preferred = [field.widthAnchor constraintEqualToConstant:400];
+        preferred.priority = NSLayoutPriorityDefaultLow;
+        preferred.active = YES;
+        [[field.heightAnchor constraintEqualToConstant:24] setActive:YES];
         return item;
     }
     return nil;
@@ -115,9 +123,9 @@ static NSWindow* g_window = nullptr;
 }
 
 - (void)goHome:(id)sender {
-    if (g_handler && g_handler->GetBrowser()) {
-        g_handler->GetBrowser()->GetMainFrame()->LoadURL("https://example.com");
-    }
+    // Same behaviour as the Bookmarks > Home menu item: show the home screen
+    // (bookmarks + search) and let it drive navigation through onOpenURL.
+    [self showHome:sender];
 }
 
 - (void)navigate:(id)sender {
@@ -254,7 +262,7 @@ static NSWindow* g_window = nullptr;
 
 - (void)importBackup:(id)sender {
     NSOpenPanel* panel = [NSOpenPanel openPanel];
-    [panel setAllowedFileTypes:@[@"json"]];
+    panel.allowedContentTypes = @[UTTypeJSON];
     if ([panel runModal] != NSModalResponseOK) return;
 
     NSString* path = [[panel URL] path];
@@ -362,7 +370,9 @@ int main(int argc, char* argv[]) {
         CefBrowserSettings browser_settings;
         g_handler = SimpleHandler::GetInstance();
 
-        CefBrowserHost::CreateBrowser(window_info, g_handler, "https://example.com", browser_settings, nullptr, nullptr);
+        // Start blank: the home screen is what the user sees first, and picking
+        // an entry there loads it into this browser.
+        CefBrowserHost::CreateBrowser(window_info, g_handler, "about:blank", browser_settings, nullptr, nullptr);
 
         // Set up menu bar
         NSMenu* mainMenu = [[NSMenu alloc] init];
@@ -380,9 +390,10 @@ int main(int argc, char* argv[]) {
 
         NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
         NSMenu* editMenu = [[NSMenu alloc] initWithTitle:[NSString stringWithUTF8String:L("menu.edit").c_str()]];
-        [editMenu addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
-        [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
-        [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+        [editMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.cut").c_str()] action:@selector(cut:) keyEquivalent:@"x"];
+        [editMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.copy").c_str()] action:@selector(copy:) keyEquivalent:@"c"];
+        [editMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.paste").c_str()] action:@selector(paste:) keyEquivalent:@"v"];
+        [editMenu addItemWithTitle:[NSString stringWithUTF8String:L("menu.select_all").c_str()] action:@selector(selectAll:) keyEquivalent:@"a"];
         [editMenuItem setSubmenu:editMenu];
         [mainMenu addItem:editMenuItem];
 
@@ -427,6 +438,9 @@ int main(int argc, char* argv[]) {
         [mainMenu addItem:bookmarksMenuItem];
 
         [NSApp setMainMenu:mainMenu];
+
+        // Show the home screen at launch (the browser itself sits on about:blank).
+        [g_toolbarDelegate showHome:nil];
 
         // Persist geometry when the app terminates.
         [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationWillTerminateNotification

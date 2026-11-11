@@ -39,8 +39,10 @@ std::string KeychainLoadCertPin(const std::string& host, int port) {
     OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef*)&dataRef);
     if (status != errSecSuccess || !dataRef) return "";
 
-    NSData* data = (__bridge_transfer NSData*)dataRef;
-    return std::string((const char*)[data bytes], [data length]);
+    NSData* data = (__bridge NSData*)dataRef;
+    std::string out((const char*)[data bytes], [data length]);
+    CFRelease(dataRef);
+    return out;
 }
 
 bool KeychainDeleteCertPin(const std::string& host, int port) {
@@ -88,8 +90,9 @@ bool KeychainLoadCredential(const std::string& key, std::string& username, std::
     OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef*)&dataRef);
     if (status != errSecSuccess || !dataRef) return false;
 
-    NSData* data = (__bridge_transfer NSData*)dataRef;
+    NSData* data = (__bridge NSData*)dataRef;
     std::string value((const char*)[data bytes], [data length]);
+    CFRelease(dataRef);
     size_t colon = value.find(':');
     if (colon == std::string::npos) return false;
     username = value.substr(0, colon);
@@ -142,8 +145,9 @@ bool KeychainLoadSecret(const std::string& service, const std::string& account, 
     CFDataRef dataRef = NULL;
     OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef*)&dataRef);
     if (status != errSecSuccess || !dataRef) return false;
-    NSData* data = (__bridge_transfer NSData*)dataRef;
+    NSData* data = (__bridge NSData*)dataRef;
     value.assign((const char*)[data bytes], [data length]);
+    CFRelease(dataRef);
     return true;
 }
 
@@ -168,10 +172,11 @@ std::vector<std::string> KeychainListAccounts(const std::string& service) {
     CFTypeRef result = NULL;
     OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
     if (status != errSecSuccess || !result) return out;
-    NSArray* items = (__bridge_transfer NSArray*)result;
+    NSArray* items = (__bridge NSArray*)result;
     for (NSDictionary* item in items) {
         NSString* account = item[(__bridge id)kSecAttrAccount];
         if (account) out.push_back([account UTF8String]);
     }
+    CFRelease(result);
     return out;
 }

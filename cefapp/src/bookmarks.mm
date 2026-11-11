@@ -19,10 +19,20 @@ std::string appSupportDir() {
     return dir;
 }
 
+// 16 random bytes as hex. IDs are opaque strings on load, so this stays
+// compatible with the old "<time>-<random>" form while making a collision
+// inside the same second (even the same millisecond) negligible.
 std::string newId() {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%lld-%u", (long long)time(nullptr), (unsigned)(arc4random() % 1000000));
-    return std::string(buf);
+    unsigned char bytes[16];
+    arc4random_buf(bytes, sizeof(bytes));
+    static const char* hex = "0123456789abcdef";
+    std::string out;
+    out.reserve(sizeof(bytes) * 2);
+    for (unsigned char b : bytes) {
+        out += hex[b >> 4];
+        out += hex[b & 0x0F];
+    }
+    return out;
 }
 
 }  // namespace
