@@ -392,6 +392,34 @@ int main(int argc, char* argv[]) {
         void* sandbox_info = nullptr;
 
         CefSettings settings;
+        // CEF warns ("Please customize CefSettings.root_cache_path") when the
+        // default is used: every build shares one cache directory, which leads
+        // to process-singleton collisions. Point it at our own Application
+        // Support folder so the profile (cookies, cache) is per-app and
+        // survives updates.
+        {
+            NSString* support = [NSSearchPathForDirectoriesInDomains(
+                NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject];
+            NSString* cacheDir = [support stringByAppendingPathComponent:@"Half-Browser/CEF"];
+            [[NSFileManager defaultManager] createDirectoryAtPath:cacheDir
+                                      withIntermediateDirectories:YES
+                                                       attributes:nil
+                                                            error:nil];
+            CefString(&settings.root_cache_path).FromString([cacheDir UTF8String]);
+            CefString(&settings.cache_path).FromString([cacheDir UTF8String]);
+        }
+        // Give OSCrypt (Chromium's cookie/password encryption) our own Keychain
+        // item. With the default names the first launch shows a system prompt
+        // naming "Chromium Safe Storage", which looks like an unrelated app
+        // asking for a password; with these names the item belongs to
+        // Half-Browser and the prompt is attributable.
+        CefString(&settings.keychain_service_name).FromString("Half-Browser Safe Storage");
+        CefString(&settings.keychain_account_name).FromString("Half-Browser");
+
+        // The CEF sandbox is only usable when the helper bundles are signed
+        // with the same identity as the app; this build is ad-hoc signed, so
+        // the sandbox stays off (Chromium still runs its renderer processes
+        // out of process).
         settings.no_sandbox = 1;
 
         CefRefPtr<CefApp> app(new MyApp());

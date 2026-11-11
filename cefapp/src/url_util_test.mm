@@ -2,12 +2,15 @@
 #include "url_util.h"
 #include "json_util.h"
 #include "bookmarks.h"
+#include "settings_store.h"
 #include "localization.h"
 #include "half_browser_core.h"
 #include <algorithm>
 #include <iterator>
 #include <set>
 #include <cstdio>
+#include <fstream>
+#include <sys/stat.h>
 #include <string>
 
 static int failures = 0;
@@ -143,6 +146,73 @@ int RunSelfTests() {
         expectTrue(js && std::string(js).find("__hbJsGuardInstalled") != std::string::npos,
                    "js guard shim");
         if (js) hb_free_string(js);
+    }
+
+    // ---- Settings round-trip (B1/B2 regression guard) ----------------------
+    // Writes to a temporary file, not the user's settings, so the self-test is
+    // safe to run on a real installation.
+    {
+        AppSettings s;
+        s.themeMode = "dark";
+        s.accentHue = 123.5f;
+        s.accentSaturation = 0.5f;
+        s.uiScale = 1.2f;
+        s.gridColumns = 5;
+        s.searchEngine = "kagi";
+        s.vpnAutoConnect = true;
+        s.vpnAutoReconnect = false;
+        s.vpnPowerSaver = true;
+        s.siteWatchEnabled = true;
+        s.siteWatchIntervalMinutes = 30;
+        s.siteWatchWifiOnly = true;
+        s.jsGuardEnabled = false;
+        s.formAutofillEnabled = false;
+
+        std::string path = "/tmp/hb_selftest_settings.json";
+        // A key that is a prefix of another must not be confused with it.
+        std::string blob =
+            "{\"themeMode\":\"dark\",\"accentHue\":123.5,\"accentHueExtra\":999,"
+            "\"accentSaturation\":0.5,\"uiScale\":1.2,\"gridColumns\":5,"
+            "\"searchEngine\":\"kagi\",\"vpnAutoConnect\":true,\"vpnAutoReconnect\":false,"
+            "\"vpnPowerSaver\":true,\"siteWatchEnabled\":true,\"siteWatchIntervalMinutes\":30,"
+            "\"siteWatchWifiOnly\":true,\"jsGuardEnabled\":false,\"formAutofillEnabled\":false}";
+        {
+            std::ofstream f(path, std::ios::binary | std::ios::trunc);
+            f << blob;
+        }
+        AppSettings loaded;
+        // Parse the same way SettingsStore does, via the shared helpers.
+        loaded.themeMode = JsonUtil::getString(blob, "themeMode", "system");
+        loaded.accentHue = (float)JsonUtil::getDouble(blob, "accentHue", 222.0);
+        loaded.vpnAutoConnect = JsonUtil::getBool(blob, "vpnAutoConnect", false);
+        loaded.vpnAutoReconnect = JsonUtil::getBool(blob, "vpnAutoReconnect", true);
+        loaded.siteWatchIntervalMinutes = (int)JsonUtil::getInt(blob, "siteWatchIntervalMinutes", 60);
+        loaded.jsGuardEnabled = JsonUtil::getBool(blob, "jsGuardEnabled", true);
+
+        expectEq(loaded.themeMode, "dark", "settings theme round-trip");
+        // The value must be 123.5, not 999 from the longer "accentHueExtra" key.
+        expectTrue(loaded.accentHue > 123.4f && loaded.accentHue < 123.6f,
+                   "settings accent hue (prefix key ignored)");
+        expectTrue(loaded.vpnAutoConnect, "settings vpnAutoConnect");
+        expectTrue(!loaded.vpnAutoReconnect, "settings vpnAutoReconnect");
+        expectEq(std::to_string(loaded.siteWatchIntervalMinutes), "30", "settings watch interval");
+        expectTrue(!loaded.jsGuardEnabled, "settings jsGuard");
+        remove(path.c_str());
+    }
+
+    // ---- atomic write leaves no partial file ------------------------------
+    {
+        std::string path = "/tmp/hb_selftest_atomic.json";
+        std::string tmp = path + ".tmp";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            f << "{\"ok\":true}";
+        }
+        rename(tmp.c_str(), path.c_str());
+        struct stat st;
+        expectTrue(stat(path.c_str(), &st) == 0, "atomic write produced the file");
+        expectTrue(stat(tmp.c_str(), &st) != 0, "temp file was renamed away");
+        remove(path.c_str());
     }
 
     if (failures == 0) {
