@@ -183,3 +183,201 @@ pub extern "C" fn hb_free_encrypted(e: *mut EncryptedFFI) {
         }
     }
 }
+// ============================================================
+// JS dialog budget (ported from Android core/JsGuard.kt)
+// ============================================================
+//
+// A hostile page can call `alert()` in a loop; the dialog is app UI, so without
+// a budget the page can freeze the browser. The policy lives in Rust so both
+// the in-page shim and the native handler agree on the same limits.
+
+/// Opaque dialog budget handle.
+pub struct HbDialogBudget {
+    inner: crate::js_guard::DialogBudget,
+}
+
+/// Creates a budget with the Android defaults (12 dialogs, 250 ms apart,
+/// 2 beforeunload prompts). Free with `hb_dialog_budget_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_dialog_budget_new() -> *mut HbDialogBudget {
+    Box::into_raw(Box::new(HbDialogBudget {
+        inner: crate::js_guard::DialogBudget::default(),
+    }))
+}
+
+/// Creates a budget with explicit limits (used by tests).
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_dialog_budget_new_with(
+    max_dialogs: i32,
+    min_interval_ms: i64,
+    max_before_unload: i32,
+) -> *mut HbDialogBudget {
+    Box::into_raw(Box::new(HbDialogBudget {
+        inner: crate::js_guard::DialogBudget::new(max_dialogs, min_interval_ms, max_before_unload),
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_dialog_budget_free(b: *mut HbDialogBudget) {
+    if !b.is_null() {
+        unsafe { let _ = Box::from_raw(b); }
+    }
+}
+
+/// Returns 1 when the dialog may be shown, 0 when it must be suppressed.
+/// `now_ms` is the current wall clock in milliseconds.
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_dialog_budget_allow(b: *mut HbDialogBudget, now_ms: i64) -> i32 {
+    if b.is_null() {
+        return 1; // fail open: never block the user because of a null handle
+    }
+    let budget = unsafe { &mut (*b).inner };
+    if budget.allow_dialog(now_ms) { 1 } else { 0 }
+}
+
+/// Returns 1 when the beforeunload prompt may be shown.
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_dialog_budget_allow_before_unload(b: *mut HbDialogBudget) -> i32 {
+    if b.is_null() {
+        return 1;
+    }
+    let budget = unsafe { &mut (*b).inner };
+    if budget.allow_before_unload() { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_dialog_budget_reset(b: *mut HbDialogBudget) {
+    if !b.is_null() {
+        unsafe { (*b).inner.reset() };
+    }
+}
+
+/// Number of dialogs suppressed so far (diagnostics).
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_dialog_budget_blocked(b: *mut HbDialogBudget) -> i32 {
+    if b.is_null() {
+        return 0;
+    }
+    unsafe { (*b).inner.blocked_dialogs }
+}
+
+/// The document-start JS guard shim. Returns a newly allocated string that the
+/// caller must release with `hb_free_string`.
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_js_guard_script() -> *mut c_char {
+    match CString::new(crate::js_guard::js()) {
+        Ok(c) => c.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+// ============================================================
+// VPN rules (ported from Android core/VpnConfig.kt, VpnTuning.kt, VpnHealth.kt)
+// ============================================================
+
+/// Parses a WireGuard config. Returns 0 on success, or the error code.
+/// On success `*out_endpoint` receives a newly allocated "host:port" string
+/// (release with `hb_free_string`); on failure it receives the detail string.
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_vpn_parse(
+    text: *const c_char,
+    out_endpoint: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> i32 {
+    if out_endpoint.is_null() || out_error.is_null() {
+        return -1;
+    }
+    unsafe {
+        *out_endpoint = std::ptr::null_mut();
+        *out_error = std::ptr::null_mut();
+    }
+    if text.is_null() {
+        return -2;
+    }
+    let raw = match unsafe { CStr::from_ptr(text) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return -2,
+    };
+    match crate::vpn_config::parse(raw) {
+        Ok(cfg) => {
+            let ep = CString::new(cfg.endpoint()).unwrap_or_default();
+            unsafe { *out_endpoint = ep.into_raw() };
+            0
+        }
+        Err((code, detail)) => {
+            let d = CString::new(detail).unwrap_or_default();
+            unsafe { *out_error = d.into_raw() };
+            // 1..N map to VpnConfigError variants in declaration order.
+            let idx = code as i32 + 1;
+            idx
+        }
+    }
+}
+
+/// Applies the keepalive/MTU/DNS tuning. Returns a newly allocated string
+/// (release with `hb_free_string`), or null on invalid input.
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_vpn_tune(text: *const c_char, keepalive_seconds: i32) -> *mut c_char {
+    if text.is_null() {
+        return std::ptr::null_mut();
+    }
+    let raw = match unsafe { CStr::from_ptr(text) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match CString::new(crate::vpn_tuning::tune(raw, keepalive_seconds)) {
+        Ok(c) => c.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Classifies a session. Returns the reachability code (0..=5) matching
+/// `VpnReachability` declaration order, or -1 on a null pointer.
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_vpn_classify(
+    connected_at: i64,
+    last_handshake_at: i64,
+    now: i64,
+    grace_start_override: i64,
+) -> i32 {
+    let snapshot = crate::vpn_health::VpnHealthSnapshot::new("", connected_at, last_handshake_at);
+    let r = crate::vpn_health::classify(&snapshot, now, grace_start_override);
+    match r {
+        crate::vpn_health::VpnReachability::Unknown => 0,
+        crate::vpn_health::VpnReachability::Verifying => 1,
+        crate::vpn_health::VpnReachability::Healthy => 2,
+        crate::vpn_health::VpnReachability::Stale => 3,
+        crate::vpn_health::VpnReachability::Unreachable => 4,
+        crate::vpn_health::VpnReachability::TunnelOnly => 5,
+    }
+}
+
+/// Next poll delay in milliseconds.
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_vpn_next_poll_delay(
+    foreground: bool,
+    reachability: i32,
+    consecutive_healthy: i32,
+) -> i64 {
+    let r = match reachability {
+        1 => crate::vpn_health::VpnReachability::Verifying,
+        2 => crate::vpn_health::VpnReachability::Healthy,
+        3 => crate::vpn_health::VpnReachability::Stale,
+        4 => crate::vpn_health::VpnReachability::Unreachable,
+        5 => crate::vpn_health::VpnReachability::TunnelOnly,
+        _ => crate::vpn_health::VpnReachability::Unknown,
+    };
+    crate::vpn_health::next_poll_delay_ms(foreground, r, consecutive_healthy)
+}
+
+/// Parses `wg show <iface> latest-handshakes` output into epoch millis.
+#[unsafe(no_mangle)]
+pub extern "C" fn hb_vpn_parse_handshakes(output: *const c_char) -> i64 {
+    if output.is_null() {
+        return 0;
+    }
+    match unsafe { CStr::from_ptr(output) }.to_str() {
+        Ok(s) => crate::vpn_health::parse_latest_handshakes(s),
+        Err(_) => 0,
+    }
+}
