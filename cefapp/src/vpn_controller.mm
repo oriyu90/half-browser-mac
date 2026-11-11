@@ -9,7 +9,10 @@
 #include <cstdlib>
 #include <dispatch/dispatch.h>
 #include <string>
+#include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
@@ -69,6 +72,47 @@ std::string configPathFor(const std::string& profileId) {
     return dir + "/" + interfaceFor(profileId) + ".conf";
 }
 
+/// Overwrites a file with zeros before unlinking it, so the private key is not
+/// left recoverable in the blocks the file occupied. Best effort: on a
+/// copy-on-write filesystem the old blocks may still exist, but the plaintext
+/// is no longer reachable through the path.
+void secureWipeFile(const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return;
+    if (S_ISREG(st.st_mode) && st.st_size > 0) {
+        int fd = open(path.c_str(), O_WRONLY);
+        if (fd >= 0) {
+            char zeros[4096] = {0};
+            off_t remaining = st.st_size;
+            while (remaining > 0) {
+                size_t chunk = (size_t)((remaining < (off_t)sizeof(zeros)) ? remaining : (off_t)sizeof(zeros));
+                if (write(fd, zeros, chunk) != (ssize_t)chunk) break;
+                remaining -= (off_t)chunk;
+            }
+            fsync(fd);
+            close(fd);
+        }
+    }
+    unlink(path.c_str());
+}
+
+/// Removes config files left behind by a previous run (a crash between `up`
+/// and `down` used to leave the private key on disk forever).
+void cleanupStaleConfigs() {
+    const char* home = getenv("HOME");
+    std::string dir = std::string(home ? home : ".") + "/Library/Application Support/Half-Browser/vpn";
+    DIR* d = opendir(dir.c_str());
+    if (!d) return;
+    struct dirent* entry;
+    while ((entry = readdir(d)) != nullptr) {
+        std::string name(entry->d_name);
+        if (name.size() > 5 && name.compare(name.size() - 5, 5, ".conf") == 0) {
+            secureWipeFile(dir + "/" + name);
+        }
+    }
+    closedir(d);
+}
+
 }  // namespace
 
 VpnController& VpnController::instance() {
@@ -79,6 +123,9 @@ VpnController& VpnController::instance() {
 VpnController::VpnController() {
     // Restore the last selected profile so the UI can show it immediately.
     activeProfileId_ = VpnStore::instance().selectedId();
+    // A previous run may have died between `up` and `down`, leaving a config
+    // with the private key in it. Wipe those before doing anything else.
+    cleanupStaleConfigs();
 }
 
 int64_t VpnController::nowMillis() const {
@@ -159,13 +206,24 @@ std::string VpnController::connect(const std::string& profileId) {
 
     std::string path = configPathFor(profileId);
     {
-        FILE* f = fopen(path.c_str(), "w");
-        if (!f) return "vpn.error.write_failed";
-        fwrite(tuned.data(), 1, tuned.size(), f);
-        fclose(f);
-        // The file holds a private key: owner-only.
+        // The file holds a private key. Create it owner-only *before* writing
+        // so there is no window where it is world-readable.
+        int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (fd < 0) return "vpn.error.write_failed";
+        size_t off = 0;
+        while (off < tuned.size()) {
+            ssize_t n = write(fd, tuned.data() + off, tuned.size() - off);
+            if (n <= 0) {
+                close(fd);
+                secureWipeFile(path);
+                return "vpn.error.write_failed";
+            }
+            off += (size_t)n;
+        }
+        close(fd);
         chmod(path.c_str(), 0600);
     }
+    activeConfigPath_ = path;
 
     state_ = VpnConnState::Connecting;
     notify();
@@ -173,6 +231,9 @@ std::string VpnController::connect(const std::string& profileId) {
     std::string out;
     bool ok = runCapture("wg-quick up '" + path + "' 2>&1", out);
     if (!ok) {
+        // The tunnel never came up, so the config is not needed any more.
+        secureWipeFile(path);
+        activeConfigPath_.clear();
         state_ = VpnConnState::Disconnected;
         reach_ = VpnReach::Unknown;
         notify();
@@ -200,8 +261,14 @@ void VpnController::disconnect() {
         return;
     }
     if (canConnect()) {
+        // wg-quick down needs the same file that wg-quick up consumed.
+        std::string path = activeConfigPath_.empty() ? configPathFor(activeProfileId_)
+                                                     : activeConfigPath_;
         std::string out;
-        runCapture("wg-quick down '" + configPathFor(activeProfileId_) + "' 2>&1", out);
+        runCapture("wg-quick down '" + path + "' 2>&1", out);
+        // The private key must not stay on disk once the tunnel is down.
+        secureWipeFile(path);
+        activeConfigPath_.clear();
     }
     state_ = VpnConnState::Disconnected;
     reach_ = VpnReach::Unknown;

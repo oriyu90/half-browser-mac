@@ -114,6 +114,8 @@ private:
     VpnConnState state_ = VpnConnState::Disconnected;
     VpnReach reach_ = VpnReach::Unknown;
     std::string activeProfileId_;
+    /// Path of the tuned config currently handed to wg-quick (empty when none).
+    std::string activeConfigPath_;
     Availability availability_ = Availability::Unsupported;
     bool availabilityProbed_ = false;
     void* timer_ = nullptr;  // dispatch_source_t
